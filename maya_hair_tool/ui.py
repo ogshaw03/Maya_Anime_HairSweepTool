@@ -18,13 +18,32 @@ try:
 except ImportError:  # pragma: no cover
     cmds = None
 
+from . import __version__
 from . import batch
 from . import constants as C
 from . import hair
 
 
-WINDOW_NAME = "animeHairBuilderWin"
+# Package name — must match install.py's `_PACKAGE` and be the exact key
+# the shelf button `import`s.
+_PACKAGE = "maya_hair_tool"
+
+# install.py's `_close_existing_window` looks for f"{_MODULE}Win", so
+# keeping this name in sync with that convention lets the installer
+# tear down the tool window before overwriting the files on disk.
+WINDOW_NAME = _PACKAGE + "Win"
 WINDOW_TITLE = "Anime Hair Builder"
+
+# ─── CUSTOMIZE (must match install.py) ────────────────────────────────────
+_GITHUB_OWNER = "ogshaw03"
+_GITHUB_REPO = "Maya_Anime_HairSweepTool"
+_GITHUB_BRANCH = "main"
+# ─── END CUSTOMIZE ────────────────────────────────────────────────────────
+
+_GITHUB_API = "https://api.github.com/repos/{0}/{1}".format(
+    _GITHUB_OWNER, _GITHUB_REPO)
+_GITHUB_RAW_BASE = "https://raw.githubusercontent.com/{0}/{1}".format(
+    _GITHUB_OWNER, _GITHUB_REPO)
 
 
 class HairBuilderUI(object):
@@ -66,8 +85,9 @@ class HairBuilderUI(object):
         if cmds.window(WINDOW_NAME, exists=True):
             cmds.deleteUI(WINDOW_NAME)
 
-        cmds.window(WINDOW_NAME, title=WINDOW_TITLE, sizeable=True,
-                    widthHeight=(340, 620))
+        title = "{0}  —  v{1}".format(WINDOW_TITLE, __version__)
+        cmds.window(WINDOW_NAME, title=title, sizeable=True,
+                    widthHeight=(340, 660))
         root = cmds.columnLayout(adjustableColumn=True, rowSpacing=6,
                                  columnAttach=("both", 8))
 
@@ -207,11 +227,21 @@ class HairBuilderUI(object):
     # Footer
     # -----------------------------------------------------------------
     def _build_footer(self, parent):
-        row = cmds.rowLayout(numberOfColumns=2, adjustableColumn=1,
-                             columnAttach=[(1, "both", 4), (2, "both", 4)],
-                             parent=parent)
-        cmds.text(label="Phase 1 - Sweep Mesh basics", align="left",
-                  parent=row)
+        row = cmds.rowLayout(
+            numberOfColumns=3,
+            adjustableColumn=1,
+            columnAttach=[(1, "both", 4), (2, "both", 4), (3, "both", 4)],
+            columnWidth3=(160, 110, 60),
+            parent=parent,
+        )
+        cmds.text(
+            label="{0}  v{1}".format(_PACKAGE, __version__),
+            align="left",
+            font="smallObliqueLabelFont",
+            parent=row,
+        )
+        cmds.button(label="GitHub から更新", height=24,
+                    command=update_from_github, parent=row)
         cmds.button(label="Close",
                     command=lambda *_: cmds.deleteUI(WINDOW_NAME),
                     parent=row)
@@ -260,9 +290,127 @@ def _read_int(widget):
 
 
 # ---------------------------------------------------------------------------
+# Update-from-GitHub flow  (patterns doc §1-7, §1-8, §1-9)
+# ---------------------------------------------------------------------------
+
+def _resolve_latest_sha():
+    """Return the tip commit SHA of `_GITHUB_BRANCH`.
+
+    SHA-pinned raw URLs are the only reliable cache-buster for
+    ``raw.githubusercontent.com`` — the CDN keys on path only, so a
+    ``?_=timestamp`` cache-buster does nothing there. We ask the GitHub
+    API for the current tip SHA and use that in the raw URL, so a new
+    commit always produces a new cache key.
+    """
+    import json
+    import random
+    import time
+    import urllib.request
+
+    salt = "{0:.6f}_{1}".format(time.time(), random.randint(0, 2 ** 32))
+    req = urllib.request.Request(
+        "{0}/branches/{1}?_={2}".format(_GITHUB_API, _GITHUB_BRANCH, salt),
+        headers={
+            "Accept": "application/vnd.github+json",
+            "Cache-Control": "no-cache",
+            "User-Agent": "{0}-updater/{1}".format(_PACKAGE, salt),
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            return json.loads(
+                resp.read().decode("utf-8"))["commit"]["sha"]
+    except Exception as exc:
+        print("[{0}] SHA lookup failed ({1}); falling back to {2}".format(
+            _PACKAGE, exc, _GITHUB_BRANCH))
+        return _GITHUB_BRANCH
+
+
+def update_from_github(*_args):
+    """UI button callback.
+
+    Returns immediately — the actual work runs on the next Maya idle so
+    we don't tear down the window that owns this callback while the
+    callback is still on the stack (patterns doc §1-9).
+    """
+    cmds.evalDeferred(_run_update, lowestPriority=True)
+
+
+def _run_update():
+    import sys
+    import traceback
+    import urllib.request
+
+    sha = _resolve_latest_sha()
+    url = "{0}/{1}/install.py".format(_GITHUB_RAW_BASE, sha)
+    print("[{0}] update: fetching {1}".format(_PACKAGE, url))
+    try:
+        req = urllib.request.Request(url, headers={
+            "Cache-Control": "no-cache",
+            "User-Agent": "{0}-updater/{1}".format(_PACKAGE, sha[:10]),
+        })
+        source = urllib.request.urlopen(req, timeout=30).read()
+    except Exception as exc:
+        traceback.print_exc()
+        cmds.confirmDialog(title="Update failed",
+                           message="install.py fetch failed:\n{0}".format(exc),
+                           button=["OK"])
+        return
+
+    if cmds.window(WINDOW_NAME, exists=True):
+        try:
+            cmds.deleteUI(WINDOW_NAME)
+        except Exception:
+            pass
+
+    ns = {"__name__": "install", "__file__": "<github>"}
+    try:
+        exec(compile(source, "install.py (from GitHub)", "exec"), ns)
+    except Exception as exc:
+        traceback.print_exc()
+        cmds.confirmDialog(
+            title="Update failed",
+            message=("install.py raised:\n{0}: {1}\n\n"
+                     "See Script Editor for full traceback.".format(
+                         type(exc).__name__, exc)),
+            button=["OK"])
+        return
+
+    # Flush the whole package so the next import re-reads from disk
+    # (patterns doc §1-6).
+    for m in [k for k in list(sys.modules)
+              if k == _PACKAGE or k.startswith(_PACKAGE + ".")]:
+        sys.modules.pop(m, None)
+
+    # Defer reopen so install()'s confirmDialog is fully dismissed first.
+    cmds.evalDeferred(_reopen_after_update, lowestPriority=True)
+
+
+def _reopen_after_update():
+    import importlib
+    import sys
+    import traceback
+    try:
+        if _PACKAGE in sys.modules:
+            importlib.reload(sys.modules[_PACKAGE])
+        mod = importlib.import_module(_PACKAGE)
+        mod.show()
+    except Exception as exc:
+        traceback.print_exc()
+        cmds.confirmDialog(
+            title="Reopen failed",
+            message=("Update finished but reopening the tool window "
+                     "failed:\n{0}: {1}\n\n"
+                     "Click the shelf button to reopen manually.".format(
+                         type(exc).__name__, exc)),
+            button=["OK"])
+
+
+# ---------------------------------------------------------------------------
 # Public entry point
 # ---------------------------------------------------------------------------
 
 def show():
     """Open the Hair Builder window."""
     HairBuilderUI().show()
+    return WINDOW_NAME

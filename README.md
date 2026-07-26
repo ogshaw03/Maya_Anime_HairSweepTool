@@ -12,25 +12,33 @@ Maya 標準の `sweepMeshCreator` をそのまま利用し、独自メッシュ�
 
 ---
 
-## セットアップ
+## インストール（ドラッグ & ドロップ 1 発）
 
-1. このリポジトリをローカルへクローンする。
-2. `scripts/` を `MAYA_SCRIPT_PATH` に追加する。あるいは `userSetup.py`
-   に以下を書く:
+配布されるファイルは `install.py` **1 つだけ** です。以降、Maya の再起動なし
+で GitHub 最新版に更新できます。詳細な設計・落とし穴の理由は
+[`maya-hot-update-patterns.md`](./maya-hot-update-patterns.md) を参照。
 
-   ```python
-   import sys, os
-   sys.path.append("/path/to/Maya_Anime_HairSweepTool/scripts")
-   ```
+1. GitHub raw から `install.py` を保存
+   `https://raw.githubusercontent.com/ogshaw03/Maya_Anime_HairSweepTool/main/install.py`
+2. **Maya のビューポートに `install.py` をドラッグ&ドロップ**
+3. 自動的に:
+   - `maya_hair_tool/` が Maya ユーザースクリプトフォルダにダウンロードされる
+   - シェルフに `HairTool` ボタンが追加される
+   - 完了ダイアログにインストール前後のバージョンが表示される
 
-3. Maya を起動し、Script Editor の Python タブで次を実行:
+### 起動
 
-   ```python
-   from maya_hair_tool import ui
-   ui.show()
-   ```
+- **左クリック** シェルフの `HairTool` ボタン → Hair Builder ウィンドウ
 
-   同じ 2 行をシェルフボタンにドラッグしておくと便利です。
+### アップデート
+
+Maya を再起動せずに GitHub 最新版に差し替えられます。**3 通り** の導線を
+用意しています（どれも同じ結果）:
+
+1. Hair Builder ウィンドウ下部の「**GitHub から更新**」ボタン
+2. シェルフボタンを**右クリック** → `Update from GitHub`
+3. Script Editor から `install.py` を再実行（ドラッグは同一セッション
+   内では 1 回しか反応しないので使わない）
 
 ---
 
@@ -51,19 +59,34 @@ Maya 標準の `sweepMeshCreator` をそのまま利用し、独自メッシュ�
 
 ---
 
-## モジュール構成
+## リポジトリ構成
 
 ```
-scripts/
-  launch_hair_tool.py        # シェルフから叩く 2 行スクリプト
-  maya_hair_tool/
-    __init__.py
-    constants.py             # プロファイル定義・デフォルト値
-    sweep_utils.py           # sweepMeshCreator の生成／探索
-    hair.py                  # 毛束の作成と Attribute 適用
-    batch.py                 # Absolute / Relative 一括編集
-    ui.py                    # Maya cmds UI (Hair Builder)
+Maya_Anime_HairSweepTool/
+├── install.py                       # エンドユーザーが唯一手動で扱うファイル
+├── maya_hair_tool/                  # ツール本体（Maya ユーザースクリプトへコピーされる）
+│   ├── __init__.py                  # __version__ と show() のエクスポート
+│   ├── constants.py                 # プロファイル定義・デフォルト値
+│   ├── sweep_utils.py               # sweepMeshCreator の生成 / 探索
+│   ├── hair.py                      # 毛束の作成と Attribute 適用
+│   ├── batch.py                     # Absolute / Relative 一括編集
+│   └── ui.py                        # Hair Builder + Update-from-GitHub フロー
+├── maya-hot-update-patterns.md      # ホットアップデート実装ノート
+├── docs/design.md                   # 設計メモ
+└── README.md
 ```
+
+### 開発者向け（ローカルの変更をテスト）
+
+GitHub を経由せず、ローカルのリポジトリ内容を直接インストールする場合は
+環境変数 `MAYA_HAIR_TOOL_USE_LOCAL=1` を立てた状態で `install.py` を実行
+してください（Maya 起動時に環境変数を設定するか、Script Editor から
+`os.environ["MAYA_HAIR_TOOL_USE_LOCAL"] = "1"` を先に実行）。
+
+新しい `.py` を `maya_hair_tool/` 配下に追加した場合は、**必ず同じ
+コミットで `install.py` の `_REMOTE_FILES` にもファイルパスを追記** して
+ください（未追記だとユーザーが Update した後に `ModuleNotFoundError`
+になります — `maya-hot-update-patterns.md` §1-10）。
 
 ---
 
@@ -71,16 +94,17 @@ scripts/
 
 | Phase | 内容 | 状況 |
 | ----- | ---- | ---- |
-| 1     | Sweep Mesh ベースの基本ツール           | 実装済み（本コミット） |
+| 1     | Sweep Mesh ベースの基本ツール           | 実装済み |
 | 2     | 毛束の Duplicate（Curve + Sweep 設定の複製） | 未着手 |
-| 3     | Batch Edit の拡張（Group 選択 / Undo チャンク統合） | 一部実装（Batch Edit パネル） |
+| 3     | Batch Edit の拡張（Group 選択 / Undo チャンク統合） | 一部実装 |
 | 4     | Sweep Preset / Hair Preset / Hair Library | 未着手 |
 | 5     | Hair Group（Front / Side / Back …）      | 未着手 |
 | 6     | Braid Generator, Twist Hair, その他手続き型毛束 | 未着手 |
 
 Phase 2 以降で追加するモジュール（例: `duplicate.py`, `library.py`,
 `group.py`, `braid.py`）はすべて `maya_hair_tool/` 配下に置き、`ui.py`
-から段階的にパネルを追加していく想定です。
+から段階的にパネルを追加していく想定です。追加時は上記の
+`_REMOTE_FILES` 更新を忘れずに。
 
 ---
 
