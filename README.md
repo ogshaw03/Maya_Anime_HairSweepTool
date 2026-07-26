@@ -57,6 +57,20 @@ Maya を再起動せずに GitHub 最新版に差し替えられます。**3 通
 
 生成される毛束は `HairGroup` トランスフォームの下に整理されます。
 
+## Phase 2 でできること（Duplicate）
+
+* Curve / Mesh / sweepMeshCreator のどれを選択しても、それを含む毛束を
+  検出して複製できる
+* 複製内容:
+  * Guide Curve（`duplicate -rr` で独立コピー、Offset で位置ずらし）
+  * `sweepMeshCreator` のスカラー属性一式（Profile / Thickness / Twist /
+    Rotation / Subdivision 等）
+  * Root → Middle → Tip の `scaleProfile` ランプ全エントリ
+  * Custom Profile を使っている場合は Profile Curve も複製
+* Count 指定で 1 発で複数本の複製が作成できる
+* 元の毛束と完全に独立（Curve 編集も Sweep 属性変更も相互に波及しない）
+* 全体を 1 つの Undo で戻せる
+
 ---
 
 ## リポジトリ構成
@@ -69,6 +83,7 @@ Maya_Anime_HairSweepTool/
 │   ├── constants.py                 # プロファイル定義・デフォルト値
 │   ├── sweep_utils.py               # sweepMeshCreator の生成 / 探索
 │   ├── hair.py                      # 毛束の作成と Attribute 適用
+│   ├── duplicate.py                 # Phase 2: 毛束の複製（Curve + Sweep 設定）
 │   ├── batch.py                     # Absolute / Relative 一括編集
 │   └── ui.py                        # Hair Builder + Update-from-GitHub フロー
 ├── maya-hot-update-patterns.md      # ホットアップデート実装ノート
@@ -95,7 +110,7 @@ GitHub を経由せず、ローカルのリポジトリ内容を直接インス�
 | Phase | 内容 | 状況 |
 | ----- | ---- | ---- |
 | 1     | Sweep Mesh ベースの基本ツール           | 実装済み |
-| 2     | 毛束の Duplicate（Curve + Sweep 設定の複製） | 未着手 |
+| 2     | 毛束の Duplicate（Curve + Sweep 設定の複製） | 実装済み |
 | 3     | Batch Edit の拡張（Group 選択 / Undo チャンク統合） | 一部実装 |
 | 4     | Sweep Preset / Hair Preset / Hair Library | 未着手 |
 | 5     | Hair Group（Front / Side / Back …）      | 未着手 |

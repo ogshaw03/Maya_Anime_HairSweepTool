@@ -52,6 +52,7 @@ _REMOTE_FILES = (
     _PACKAGE + "/constants.py",
     _PACKAGE + "/sweep_utils.py",
     _PACKAGE + "/hair.py",
+    _PACKAGE + "/duplicate.py",
     _PACKAGE + "/batch.py",
     _PACKAGE + "/ui.py",
 )

@@ -21,7 +21,9 @@ except ImportError:  # pragma: no cover
 from . import __version__
 from . import batch
 from . import constants as C
+from . import duplicate
 from . import hair
+from . import sweep_utils as su
 
 
 # Package name — must match install.py's `_PACKAGE` and be the exact key
@@ -68,6 +70,10 @@ class HairBuilderUI(object):
         self.subdiv_axis = None
         self.subdiv_length = None
 
+        # Duplicate panel widgets.
+        self.dup_count = None
+        self.dup_offset = None
+
         # Batch panel widgets.
         self.batch_mode = None      # radio collection
         self.batch_thickness = None
@@ -87,11 +93,13 @@ class HairBuilderUI(object):
 
         title = "{0}  —  v{1}".format(WINDOW_TITLE, __version__)
         cmds.window(WINDOW_NAME, title=title, sizeable=True,
-                    widthHeight=(340, 660))
+                    widthHeight=(360, 780))
         root = cmds.columnLayout(adjustableColumn=True, rowSpacing=6,
                                  columnAttach=("both", 8))
 
         self._build_create_panel(root)
+        cmds.separator(height=8, style="in")
+        self._build_duplicate_panel(root)
         cmds.separator(height=8, style="in")
         self._build_batch_panel(root)
         cmds.separator(height=8, style="in")
@@ -148,6 +156,46 @@ class HairBuilderUI(object):
             subdivisions_axis=_read_int(self.subdiv_axis),
             subdivisions_length=_read_int(self.subdiv_length),
         )
+
+    # -----------------------------------------------------------------
+    # Duplicate panel  (Phase 2)
+    # -----------------------------------------------------------------
+    def _build_duplicate_panel(self, parent):
+        cmds.frameLayout(label="Duplicate Hair", collapsable=False,
+                         marginHeight=6, marginWidth=6, parent=parent)
+        col = cmds.columnLayout(adjustableColumn=True, rowSpacing=4)
+
+        self.dup_count = _int_slider(col, "Count", 1, 1, 20)
+        self.dup_offset = cmds.floatFieldGrp(
+            label="Offset (X Y Z)",
+            numberOfFields=3,
+            value1=1.0, value2=0.0, value3=0.0,
+            columnAlign=(1, "left"),
+            columnWidth4=(90, 60, 60, 60),
+            parent=col,
+        )
+        cmds.text(
+            label=("Curve / mesh / sweep のいずれかを選択して "
+                   "Duplicate してください。"),
+            align="left", parent=col, font="smallObliqueLabelFont",
+        )
+        cmds.button(label="Duplicate Selected Hair",
+                    height=32, command=self._on_duplicate, parent=col)
+
+    def _on_duplicate(self, *_):
+        creators = su.sweep_creators_from_selection()
+        if not creators:
+            cmds.warning(
+                "No hair strands found in selection. "
+                "Select a hair curve, mesh, or sweepMeshCreator.")
+            return
+        count = _read_int(self.dup_count)
+        offset = (
+            cmds.floatFieldGrp(self.dup_offset, query=True, value1=True),
+            cmds.floatFieldGrp(self.dup_offset, query=True, value2=True),
+            cmds.floatFieldGrp(self.dup_offset, query=True, value3=True),
+        )
+        duplicate.duplicate_hair(creators, count=count, offset=offset)
 
     # -----------------------------------------------------------------
     # Batch Edit panel
