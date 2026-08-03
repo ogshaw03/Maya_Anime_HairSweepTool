@@ -127,3 +127,76 @@
       結果を SESSION_LOG に記録
 - [ ] (担当: 次に開いた側) Phase 3 実装と main への初回 merge の
       優先順位をユーザーに確認して着手
+
+---
+
+## 2026-08-04 (local) — v0.2.0 静的検証 (`/mc` 5 機並列 scout)
+
+### やったこと
+- 管制室 (mission-control) で scout エージェント 5 機を並列 spawn し、
+  v0.2.0 の各モジュールを静的検証:
+  - **SCOUT-A**: install.py 全ロジック
+  - **SCOUT-B**: Phase 1 コア (hair.py + sweep_utils.py + constants.py)
+  - **SCOUT-C**: Phase 2 (duplicate.py)
+  - **SCOUT-D**: batch.py + ui.py + Update-from-GitHub フロー
+  - **SCOUT-E**: 外部整合性 (GitHub raw 実データ照合)
+- 合計 36 発見 (重複 1 件を含む、実効 35 件):
+  **Critical 6 / Warning 15 / Info 14**
+- mission `maya-hair-sweep-handoff-daf0ba` で管制室ダッシュボードに記録済み
+
+### 検討した代替案
+- 特になし (静的検証 fan-out。Maya 実機無しでできる範囲を最大化した)
+
+### 悩みどころ / 未確定 (Critical 発見一覧)
+
+**リリース版が壊れる可能性がある問題:**
+
+1. **[install.py:41]** `_GITHUB_BRANCH = "main"` が GitHub に不在
+   (実存は `claude/maya-anime-hair-sweep-5zpemq` / `claude/maya-hair-sweep-handoff-daf0ba`
+   の 2 本のみ)。本番ドラッグ&ドロップも Update ボタンも 404 で全滅する。
+   → **対処**: (a) `main` ブランチを作成 & push、または (b) `_GITHUB_BRANCH` を
+   存在ブランチに書き換える
+
+2. **[hair.py:137-143]** `_apply_settings` で thickness を書いた直後、
+   width/height (デフォルト 1.0) で無条件上書き。**Thickness スライダーが
+   実効効かない**。`_on_create` は常に width/height を渡すのでほぼ全ての作成で発生。
+
+3. **[hair.py:120-181]** `set_profile` の Oval/Flat/Sharp/Diamond 用に設定した
+   `scaleProfileY` (0.55/0.35/0.6) と 45° `rotateProfile` が、
+   直後の `_apply_settings` で height=1.0 / rotation=0.0 に塗替え。
+   **プリセット 4 種が作成時に Round と同じ形になる**。
+
+4. **[ui.py:236-243]** Batch Edit の plan で `scaleProfileX` が
+   `batch_thickness` → `batch_width` の順で 2 回書かれ、
+   Absolute で thickness 効果が消滅、Relative で二重乗算。
+   `scaleProfileY` も thickness↔height で同じ。
+
+5. **[ui.py:253-271 + hair.py:200-211]** Batch Apply が
+   `set_taper_profile` を middle_scale 省略で呼び、ramp をクリア→3 点書き直し
+   するため、Apply を押すたびに **Middle Scale が既定 1.0 にリセット**。
+
+6. **[ui.py:259-272]** Relative モードの Root/Tip Taper が既存 ramp 値を
+   読み戻さず、Absolute 分岐と同一の呼び出しをするので Absolute/Relative
+   ラジオが実質同じ挙動 (HANDOFF § 7-1 既知)。
+
+**Warning 主要**: SHA fallback silent (§ 1-7 再発リスク)、`install()` 二重実行、
+`_SHELF_UPDATE_CMD` 例外裸、`_safe_set` の setAttr 失敗握潰し、
+`_SCALAR_ATTRS` の Maya 版依存名未確定、Custom Profile candidate 名不一致、
+Batch Edit の undoInfo チャンク無し、`_run_update` の Maya UI フリーズ、等
+
+**Info**: retry backoff 実効無し、tmp ファイルリーク、命名衝突、
+evalDeferred 段階数、選択が DG ノード等
+
+### 次にやること
+- [ ] (担当: next) **Critical 1** (main ブランチ不在) の対処方針を決める:
+      (a) main 作成 & push、(b) `_GITHUB_BRANCH` を書き換え、
+      どちらか選んで実施
+- [ ] (担当: next) **Critical 2-6** (Phase 1 の thickness/profile 塗替え、
+      Batch Edit の X/Y 二重書き & Middle リセット) の修正実装。
+      Phase 1 の Critical 2-3 は _apply_settings の順序/条件を直せば済むので
+      比較的低リスク。Batch Edit の Critical 4-5 は plan テーブル再設計が必要
+- [ ] (担当: local, 次回) 実機 Maya で v0.2.0 を触って本 log の Critical が
+      本当に再現するか確認 (静的検証なので、Maya の実 attribute 挙動と
+      食い違う可能性が残る)
+- [ ] (担当: 次に開いた側) 上記が片付いてから、Phase 3 実装 or v0.2.1
+      リリースの優先順位を決める
