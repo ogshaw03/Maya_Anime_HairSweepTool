@@ -10,6 +10,7 @@ Apply press in one chunk via :func:`batch_undo_chunk`.
 
 from __future__ import annotations
 
+import math
 from contextlib import contextmanager
 from typing import Dict, Iterable, List
 
@@ -20,6 +21,19 @@ except ImportError:  # pragma: no cover
 
 from . import hair
 from . import sweep_utils as su
+
+
+# Absolute tolerance for "is this slider value at its identity?" checks.
+# Slider drags leave tiny FP residues like 0.99999998 that would defeat
+# a strict ``value == 1.0`` comparison and re-write attributes the user
+# didn't intend to touch.
+IDENTITY_TOL = 1e-4
+
+
+def is_identity(value: float, identity: float = 1.0) -> bool:
+    """Return True when ``value`` is close enough to ``identity`` to
+    be treated as "no change" by the Batch Edit sentinel logic."""
+    return math.isclose(value, identity, abs_tol=IDENTITY_TOL)
 
 
 ATTRS_BATCH = (
@@ -71,6 +85,25 @@ def apply_relative(creators: Iterable[str], attr: str, factor: float) -> None:
             cmds.warning(
                 "[maya_hair_tool] batch scale {0}.{1} by {2!r} failed: "
                 "{3}".format(c, attr, factor, exc))
+
+
+def apply_delta(creators: Iterable[str], attr: str, delta: float) -> None:
+    """Add ``delta`` to each creator's current ``attr`` value.
+
+    Used for attributes where a multiplicative "Relative" doesn't make
+    semantic sense — notably ``twistAngle``, where "Relative 45" ought
+    to mean "add 45° to whatever twist each strand already has", not
+    "multiply the twist by 45"."""
+    for c in creators:
+        if not cmds.attributeQuery(attr, node=c, exists=True):
+            continue
+        try:
+            current = cmds.getAttr(c + "." + attr)
+            cmds.setAttr(c + "." + attr, current + delta)
+        except Exception as exc:
+            cmds.warning(
+                "[maya_hair_tool] batch add {0}.{1} += {2!r} failed: "
+                "{3}".format(c, attr, delta, exc))
 
 
 def snapshot(creators: Iterable[str]) -> Dict[str, Dict[str, float]]:

@@ -53,6 +53,7 @@ HAIR_STRAND_PREFIX = "hair"
 HAIR_CURVE_SUFFIX = "_curve"
 HAIR_MESH_SUFFIX = "_mesh"
 HAIR_SWEEP_SUFFIX = "_sweep"
+HAIR_PROFILE_SUFFIX = "_profile"
 
 # Custom attribute added to the sweepMeshCreator node so the tool can
 # recognise and re-open its own strands later.

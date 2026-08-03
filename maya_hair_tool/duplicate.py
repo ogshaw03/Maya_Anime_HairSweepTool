@@ -236,8 +236,14 @@ def _copy_scale_profile_ramp(src: str, dst: str) -> None:
             cmds.setAttr(
                 "{0}[{1}].scaleProfile_Interp".format(dst_attr, out_i),
                 interp)
-        except Exception:
-            pass
+        except Exception as exc:
+            # Warn instead of silently dropping the entry — same
+            # policy as _copy_scalar_attrs so users find out when a
+            # taper point failed to replicate.
+            cmds.warning(
+                "[maya_hair_tool] scaleProfile entry {0} → {1} at "
+                "index {2}/{3} failed to copy: {4}".format(
+                    src, dst, src_i, out_i, exc))
 
 
 def _duplicate_custom_profile_curve(src: str, dst: str,
@@ -278,7 +284,7 @@ def _duplicate_custom_profile_curve(src: str, dst: str,
     try:
         dup_result = cmds.duplicate(
             src_curve, returnRootsOnly=True,
-            name=name_hint + "_profile",
+            name=name_hint + C.HAIR_PROFILE_SUFFIX,
         ) or []
     except Exception as exc:
         cmds.warning(
@@ -288,6 +294,16 @@ def _duplicate_custom_profile_curve(src: str, dst: str,
     if not dup_result:
         return
     dup_profile = dup_result[0]
+
+    def _delete_orphan():
+        # Clean up the freshly-duplicated ``_profile`` transform when
+        # we couldn't wire it up — leaving it in the scene would give
+        # the user a mystery node with no history.
+        try:
+            if cmds.objExists(dup_profile):
+                cmds.delete(dup_profile)
+        except Exception:
+            pass
 
     # Filter intermediate shapes ("...Orig" from Maya's construction
     # history): connecting to an intermediate would put the profile on
@@ -305,6 +321,7 @@ def _duplicate_custom_profile_curve(src: str, dst: str,
         dup_shape = shape
         break
     if dup_shape is None:
+        _delete_orphan()
         return
 
     # Match the source's plug type — worldSpace vs local.
@@ -319,6 +336,7 @@ def _duplicate_custom_profile_curve(src: str, dst: str,
         cmds.warning(
             "[maya_hair_tool] custom profile connect failed: "
             "{0}".format(exc))
+        _delete_orphan()
 
 
 def _match_parent(src_mesh: Optional[str], new_mesh: Optional[str]) -> None:
@@ -355,13 +373,13 @@ def _unique_hair_name(src_curve: str, src_mesh: Optional[str]) -> str:
     """
     if src_mesh:
         base = src_mesh.split("|")[-1]
-        for suffix in (C.HAIR_MESH_SUFFIX, "_mesh", "_geo"):
+        for suffix in (C.HAIR_MESH_SUFFIX, "_geo"):
             if base.endswith(suffix):
                 base = base[: -len(suffix)]
                 break
     else:
         base = src_curve.split("|")[-1]
-        for suffix in ("_curve", "_crv", "Curve", "Crv"):
+        for suffix in (C.HAIR_CURVE_SUFFIX, "_crv", "Curve", "Crv"):
             if base.endswith(suffix):
                 base = base[: -len(suffix)]
                 break
@@ -373,7 +391,7 @@ def _unique_hair_name(src_curve: str, src_mesh: Optional[str]) -> str:
     while (cmds.objExists(candidate + C.HAIR_MESH_SUFFIX)
             or cmds.objExists(candidate + C.HAIR_CURVE_SUFFIX)
             or cmds.objExists(candidate + C.HAIR_SWEEP_SUFFIX)
-            or cmds.objExists(candidate + "_profile")):
+            or cmds.objExists(candidate + C.HAIR_PROFILE_SUFFIX)):
         i += 1
         candidate = "{0}_{1:02d}".format(base, i)
     return candidate

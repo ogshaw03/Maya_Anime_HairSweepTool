@@ -214,14 +214,14 @@ class HairBuilderUI(object):
             parent=col,
         )
 
-        self.batch_thickness = _slider(col, "Thickness", 1.0, 0.01, 5.0)
-        self.batch_width = _slider(col, "Width", 1.0, 0.01, 5.0)
-        self.batch_height = _slider(col, "Height", 1.0, 0.01, 5.0)
-        self.batch_root = _slider(col, "Root Scale", 1.0, 0.0, 3.0)
-        self.batch_middle = _slider(col, "Middle Scale", 1.0, 0.0, 3.0)
-        self.batch_tip = _slider(col, "Tip Scale", 1.0, 0.0, 3.0)
-        self.batch_twist = _slider(col, "Twist", 0.0, -720.0, 720.0)
-        self.batch_subdiv = _int_slider(col, "Subdiv (Axis)", 8, 3, 32)
+        self.batch_thickness = _batch_slider(col, "Thickness", 1.0, 0.01, 5.0)
+        self.batch_width = _batch_slider(col, "Width", 1.0, 0.01, 5.0)
+        self.batch_height = _batch_slider(col, "Height", 1.0, 0.01, 5.0)
+        self.batch_root = _batch_slider(col, "Root Scale", 1.0, 0.0, 3.0)
+        self.batch_middle = _batch_slider(col, "Middle Scale", 1.0, 0.0, 3.0)
+        self.batch_tip = _batch_slider(col, "Tip Scale", 1.0, 0.0, 3.0)
+        self.batch_twist = _batch_slider(col, "Twist", 0.0, -720.0, 720.0)
+        self.batch_subdiv = _batch_int_slider(col, "Subdiv (Axis)", 8, 3, 32)
 
         cmds.text(
             label=("Sliders left at 1.0 (or 0.0 for Twist) are treated "
@@ -252,27 +252,49 @@ class HairBuilderUI(object):
         twist = _read_float(self.batch_twist)
         subdiv = _read_int(self.batch_subdiv)
 
+        # Convention: sliders at their identity value are treated as
+        # "no change". Use ``batch.is_identity`` with a small tolerance
+        # so slider-drag FP residues (0.99999998 etc.) still count as
+        # identity.
         # Resolve scaleProfileX/Y so each is written at most once per
         # Apply (previous plan wrote thickness *then* width to X, which
         # cancelled thickness in Absolute and double-applied it in
-        # Relative). Convention: sliders at their identity value
-        # (1.0 for scales, 0.0 for twist) mean "no change".
-        scalar_plan = []
-        if thickness != 1.0:
+        # Relative).
+        scalar_plan = []      # multiplicative attrs
+        delta_plan = []       # additive attrs (Relative uses +, not *)
+        if not batch.is_identity(thickness, 1.0):
             # Uniform scale wins over per-axis overrides.
             scalar_plan.append(("scaleProfileX", thickness))
             scalar_plan.append(("scaleProfileY", thickness))
         else:
-            if width != 1.0:
+            if not batch.is_identity(width, 1.0):
                 scalar_plan.append(("scaleProfileX", width))
-            if height_v != 1.0:
+            if not batch.is_identity(height_v, 1.0):
                 scalar_plan.append(("scaleProfileY", height_v))
-        if twist != 0.0:
-            scalar_plan.append(("twistAngle", twist))
-        # Subdivision applies only in Absolute mode — Relative
-        # multiplication of an integer count is ill-defined.
-        if is_absolute:
+        if not batch.is_identity(twist, 0.0):
+            # Twist is angular: Relative "×45" is nonsensical, treat
+            # the slider as a delta added to each strand's current
+            # twist. Absolute is a straight set as before.
+            if is_absolute:
+                scalar_plan.append(("twistAngle", twist))
+            else:
+                delta_plan.append(("twistAngle", twist))
+        # Subdivision applies only in Absolute mode, and only when the
+        # user actually moved it off the default (8). Skipping the
+        # default avoids stomping user-tuned subdiv while they tweak
+        # something else on the panel.
+        if is_absolute and subdiv != C.DEFAULT_SUBDIVISIONS_AXIS:
             scalar_plan.append(("interpolationSteps", subdiv))
+
+        # Skip the taper stage entirely when every taper slider is at
+        # identity — otherwise ``set_taper_profile`` would wipe any
+        # extra ramp entries the user authored in the Attribute Editor
+        # (a real Phase 4 preset-usage regression risk).
+        taper_touched = (
+            not batch.is_identity(root, 1.0)
+            or not batch.is_identity(middle, 1.0)
+            or not batch.is_identity(tip, 1.0)
+        )
 
         with batch.batch_undo_chunk("HairBatchApply"):
             for attr, value in scalar_plan:
@@ -280,26 +302,32 @@ class HairBuilderUI(object):
                     batch.apply_absolute(creators, attr, value)
                 else:
                     batch.apply_relative(creators, attr, value)
+            for attr, delta in delta_plan:
+                batch.apply_delta(creators, attr, delta)
 
-            # Taper (Root / Middle / Tip) — read the current ramp per
-            # strand so a slider left at 1.0 preserves the existing
-            # value (Absolute) or is a 1× no-op (Relative).
-            for c in creators:
-                existing = hair.read_taper_values(c)
-                if is_absolute:
-                    new_r = root if root != 1.0 else existing[0]
-                    new_m = middle if middle != 1.0 else existing[1]
-                    new_t = tip if tip != 1.0 else existing[2]
-                else:
-                    new_r = existing[0] * root
-                    new_m = existing[1] * middle
-                    new_t = existing[2] * tip
-                hair.set_taper_profile(
-                    c,
-                    root_scale=new_r,
-                    middle_scale=new_m,
-                    tip_scale=new_t,
-                )
+            if taper_touched:
+                # Taper (Root / Middle / Tip) — read the current ramp
+                # per strand so a slider left at 1.0 preserves the
+                # existing value (Absolute) or is a 1× no-op (Relative).
+                for c in creators:
+                    existing = hair.read_taper_values(c)
+                    if is_absolute:
+                        new_r = (root if not batch.is_identity(root, 1.0)
+                                 else existing[0])
+                        new_m = (middle if not batch.is_identity(middle, 1.0)
+                                 else existing[1])
+                        new_t = (tip if not batch.is_identity(tip, 1.0)
+                                 else existing[2])
+                    else:
+                        new_r = existing[0] * root
+                        new_m = existing[1] * middle
+                        new_t = existing[2] * tip
+                    hair.set_taper_profile(
+                        c,
+                        root_scale=new_r,
+                        middle_scale=new_m,
+                        tip_scale=new_t,
+                    )
 
     # -----------------------------------------------------------------
     # Footer
@@ -329,14 +357,15 @@ class HairBuilderUI(object):
 # Widget helpers
 # ---------------------------------------------------------------------------
 
-def _slider(parent, label, value, minv, maxv):
+def _slider(parent, label, value, minv, maxv,
+            field_min=-1e6, field_max=1e6):
     return cmds.floatSliderGrp(
         label=label,
         field=True,
         minValue=minv,
         maxValue=maxv,
-        fieldMinValue=-1e6,
-        fieldMaxValue=1e6,
+        fieldMinValue=field_min,
+        fieldMaxValue=field_max,
         value=value,
         columnAlign=(1, "left"),
         columnWidth3=(90, 60, 120),
@@ -344,18 +373,46 @@ def _slider(parent, label, value, minv, maxv):
     )
 
 
-def _int_slider(parent, label, value, minv, maxv):
+def _int_slider(parent, label, value, minv, maxv,
+                field_min=1, field_max=999):
     return cmds.intSliderGrp(
         label=label,
         field=True,
         minValue=minv,
         maxValue=maxv,
-        fieldMinValue=1,
-        fieldMaxValue=999,
+        fieldMinValue=field_min,
+        fieldMaxValue=field_max,
         value=value,
         columnAlign=(1, "left"),
         columnWidth3=(90, 60, 120),
         parent=parent,
+    )
+
+
+def _batch_slider(parent, label, value, minv, maxv):
+    """Batch-panel slider with a tight field range.
+
+    Numeric-field entry is capped to a sensible domain (roughly the
+    slider's own range with headroom) so a typo like ``1000000`` in
+    Relative mode can't multiply every strand's thickness a million-
+    fold in a single Apply.
+    """
+    # Give the field a bit of headroom past the slider max so users
+    # can still exceed the slider knob's range when they really want,
+    # but not by ~5 orders of magnitude.
+    headroom = 5.0
+    return _slider(
+        parent, label, value, minv, maxv,
+        field_min=min(minv, 0.0) - headroom,
+        field_max=maxv + headroom,
+    )
+
+
+def _batch_int_slider(parent, label, value, minv, maxv):
+    return _int_slider(
+        parent, label, value, minv, maxv,
+        field_min=minv,
+        field_max=maxv,
     )
 
 
@@ -453,6 +510,15 @@ def _run_update():
         except Exception:
             pass
 
+    # Pin the SHA we already resolved so ``install._fetch_package`` /
+    # ``install._resolve_latest_sha`` reuses it instead of hitting
+    # ``/branches/main`` a second time. Halves the GitHub API budget
+    # for the Update flow and guarantees both halves of the update
+    # (fetch install.py + fetch package files) reference the *same*
+    # commit even if a new push lands between them.
+    import os
+    env_pin = _PACKAGE.upper() + "_PIN_SHA"
+    os.environ[env_pin] = sha
     ns = {"__name__": "install", "__file__": "<github>"}
     try:
         exec(compile(source, "install.py (from GitHub)", "exec"), ns)
@@ -465,6 +531,8 @@ def _run_update():
                          type(exc).__name__, exc)),
             button=["OK"])
         return
+    finally:
+        os.environ.pop(env_pin, None)
 
     # Flush the whole package so the next import re-reads from disk
     # (patterns doc §1-6).

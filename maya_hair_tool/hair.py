@@ -80,7 +80,13 @@ def create_hair_from_selected_curves(
 
         if hair_group and cmds.objExists(mesh_xform):
             try:
-                cmds.parent(mesh_xform, hair_group)
+                parented = cmds.parent(mesh_xform, hair_group)
+                # cmds.parent returns the new full path(s); use it so
+                # created_meshes references the moved node instead of
+                # the old short name (which can collide with a same-
+                # named node elsewhere and cause a select mis-fire).
+                if parented:
+                    mesh_xform = parented[0]
             except RuntimeError as exc:
                 cmds.warning(
                     "[maya_hair_tool] could not parent {0} under {1}: "
@@ -162,12 +168,27 @@ def _apply_settings(
     if profile is not None:
         set_profile(creator, profile)
 
+    # Read the baseline scale that ``set_profile`` just applied. For
+    # Oval/Flat/Sharp presets ``scaleProfileY`` may be 0.55/0.35/0.6
+    # instead of 1.0; using it as a multiplier for ``thickness``
+    # preserves the preset silhouette when the user cranks Thickness
+    # up (e.g. Oval + Thickness 2.0 → Y = 0.55 × 2.0 = 1.1, still
+    # oval, just bigger).
+    baseline_x = 1.0
+    baseline_y = 1.0
+    if cmds is not None:
+        try:
+            baseline_x = float(cmds.getAttr(creator + ".scaleProfileX"))
+            baseline_y = float(cmds.getAttr(creator + ".scaleProfileY"))
+        except Exception:
+            pass
+
     # Thickness = uniform scale shorthand. Non-identity wins over
     # width/height so a lone Thickness slider is not silently
     # overridden by width/height defaults.
     if thickness is not None and float(thickness) != 1.0:
-        _safe_set(creator, "scaleProfileX", float(thickness))
-        _safe_set(creator, "scaleProfileY", float(thickness))
+        _safe_set(creator, "scaleProfileX", float(thickness) * baseline_x)
+        _safe_set(creator, "scaleProfileY", float(thickness) * baseline_y)
     else:
         if width is not None and float(width) != 1.0:
             _safe_set(creator, "scaleProfileX", float(width))
@@ -195,9 +216,22 @@ def _apply_settings(
 
 
 def set_profile(creator: str, profile: str) -> None:
-    """Switch the sweep to the requested profile preset."""
+    """Switch the sweep to the requested profile preset.
+
+    Always reset ``scaleProfileY`` and ``rotateProfile`` to identity
+    values (1.0 / 0.0) before applying the preset. Without this reset
+    a previous preset's leftover value (Flat's Y=0.35, Sharp's 45°)
+    would bleed into the newly requested shape — e.g. Flat → Diamond
+    would still be squashed to Y=0.35 because Diamond only sets
+    ``rotateProfile``.
+    """
     poly_type = C.PROFILE_POLY_TYPE.get(profile, 0)
     _safe_set(creator, "profilePolyType", poly_type)
+
+    # Reset per-preset knobs to identity so a previous preset does not
+    # bleed into the new shape.
+    _safe_set(creator, "scaleProfileY", 1.0)
+    _safe_set(creator, "rotateProfile", 0.0)
 
     # Adjust the aspect ratio for named preset variants that share a
     # profilePolyType with something else.
@@ -210,9 +244,8 @@ def set_profile(creator: str, profile: str) -> None:
         _safe_set(creator, "rotateProfile", 45.0)
     elif profile == C.PROFILE_DIAMOND:
         _safe_set(creator, "rotateProfile", 45.0)
-    elif profile == C.PROFILE_TEAR:
-        # Custom profile is expected — user can edit the shape further.
-        _safe_set(creator, "rotateProfile", 0.0)
+    # PROFILE_TEAR and PROFILE_CUSTOM keep the identity values set
+    # above; the user is expected to edit the custom profile curve.
 
 
 def set_taper_profile(
@@ -306,8 +339,11 @@ def read_taper_values(creator: str) -> tuple:
 
     def _closest(target_pos, fallback):
         best = min(entries, key=lambda pv: abs(pv[0] - target_pos))
-        # If nothing is close enough, fall back to the default.
-        if abs(best[0] - target_pos) > 0.25:
+        # Tighter tolerance so a middle-of-nowhere entry (e.g. an
+        # authored ramp point at position 0.3) is not mis-picked as
+        # a "middle" reading. Anything more than 0.1 away is treated
+        # as "no anchor at that position" and we fall back.
+        if abs(best[0] - target_pos) > 0.1:
             return fallback
         return best[1]
 
