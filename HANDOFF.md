@@ -269,3 +269,47 @@ PR を出してマージするかは未定。マージ前に配布 URL は動作
 - §8 のオプション拡張（新版通知等）
 - Maya のバージョン依存で挙動が変わる箇所（attribute 名の吸収など）
 - 破壊的な git 操作（force push, main への直 push, ブランチ削除）
+
+---
+
+## 12. セッション同期ワークフロー（web / local 2 拠点）
+
+このプロジェクトは **自宅 = local セッション** と **出先 = web セッション**
+の 2 拠点で交互に開発される。同時編集は基本発生しない前提。
+文脈は `SESSION_LOG.md`（追記式・議論履歴込み）経由で引き継ぐ。
+
+### 12-1. セッション開始時の必須手順
+
+**スラッシュコマンド `/session-sync`** を打つと以下が自動で走る:
+
+1. `git status` / `git pull --rebase`（unclean なら stash 後）
+2. `SESSION_LOG.md` の末尾を Read して前回文脈を復元
+3. `HANDOFF.md` § 4（絶対守るルール）を Read
+4. 直近エントリ要約 + 引き受けるべき「次にやること」を報告
+
+コマンドの本体は `.claude/commands/session-sync.md`（プロジェクト版、
+git で共有）と `~/.claude/commands/session-sync.md`（ユーザー版、
+他プロジェクトでも呼べる）の両方に置いてある。
+
+### 12-2. local / web の役割分担
+
+- **local（自宅）** — Maya 実機を持つ。実機依存タスク全般:
+  attribute 実挙動の確認、`scaleProfile` ramp readback の検証、
+  Custom Profile Curve の Maya version 差検証（§ 7-3）、
+  Update フロー動作確認、v0.2.0 実機健全性チェックなど
+- **web（出先）** — Maya 不要な実装（純ロジック、UI 構造、
+  ドキュメント、設計ドラフト）。実機依存の疑問が出たら
+  SESSION_LOG に「local への検証依頼」として書いて次ターンに委ねる
+
+### 12-3. セッション終了時
+
+`SESSION_LOG.md` の末尾に **やったこと / 検討した代替案 / 悩みどころ /
+次にやること** の 4 ブロックで新エントリを追記し、
+**実装コミットとは別コミット**（`chore(session-log): ...`）で push。
+push は都度ユーザー確認を挟む。
+
+### 12-4. 運用ルール補足
+
+- 同時編集は基本しない前提なので担当ファイル宣言は不要
+- `_REMOTE_FILES` 同期義務（§ 4-3）は両セッション共通で継続
+- § 8 拡張と main への PR はユーザー承認必須（§ 4-4 継続）
