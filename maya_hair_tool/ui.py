@@ -80,6 +80,7 @@ class HairBuilderUI(object):
         self.batch_width = None
         self.batch_height = None
         self.batch_root = None
+        self.batch_middle = None
         self.batch_tip = None
         self.batch_twist = None
         self.batch_subdiv = None
@@ -217,9 +218,19 @@ class HairBuilderUI(object):
         self.batch_width = _slider(col, "Width", 1.0, 0.01, 5.0)
         self.batch_height = _slider(col, "Height", 1.0, 0.01, 5.0)
         self.batch_root = _slider(col, "Root Scale", 1.0, 0.0, 3.0)
+        self.batch_middle = _slider(col, "Middle Scale", 1.0, 0.0, 3.0)
         self.batch_tip = _slider(col, "Tip Scale", 1.0, 0.0, 3.0)
         self.batch_twist = _slider(col, "Twist", 0.0, -720.0, 720.0)
         self.batch_subdiv = _int_slider(col, "Subdiv (Axis)", 8, 3, 32)
+
+        cmds.text(
+            label=("Sliders left at 1.0 (or 0.0 for Twist) are treated "
+                   "as \"no change\" — Absolute preserves the current "
+                   "value, Relative is a 1× no-op. Subdiv only applies "
+                   "in Absolute mode."),
+            align="left", parent=col, font="smallObliqueLabelFont",
+            wordWrap=True,
+        )
 
         cmds.button(label="Apply to Selected",
                     height=32, command=self._on_batch_apply, parent=col)
@@ -232,44 +243,63 @@ class HairBuilderUI(object):
         is_absolute = cmds.radioButtonGrp(
             self.batch_mode, query=True, select=True) == 1
 
-        # (attribute, widget, reader)
-        plan = [
-            ("scaleProfileX", self.batch_thickness, _read_float),
-            ("scaleProfileY", self.batch_thickness, _read_float),
-            ("scaleProfileX", self.batch_width, _read_float),
-            ("scaleProfileY", self.batch_height, _read_float),
-            ("twistAngle", self.batch_twist, _read_float),
-            ("interpolationSteps", self.batch_subdiv, _read_int),
-        ]
-        # Root / Tip taper is handled specially through set_taper_profile
-        # via a small per-strand snapshot below.
-        for attr, widget, reader in plan:
-            value = reader(widget)
-            if is_absolute:
-                batch.apply_absolute(creators, attr, value)
-            else:
-                batch.apply_relative(creators, attr, value)
+        thickness = _read_float(self.batch_thickness)
+        width = _read_float(self.batch_width)
+        height_v = _read_float(self.batch_height)
+        root = _read_float(self.batch_root)
+        middle = _read_float(self.batch_middle)
+        tip = _read_float(self.batch_tip)
+        twist = _read_float(self.batch_twist)
+        subdiv = _read_int(self.batch_subdiv)
 
-        root_value = _read_float(self.batch_root)
-        tip_value = _read_float(self.batch_tip)
-        for c in creators:
-            if is_absolute:
-                hair.set_taper_profile(c, root_scale=root_value,
-                                       tip_scale=tip_value)
-            else:
-                # Relative: multiply existing endpoints.
-                current = hair.get_settings(c)
-                # We can't easily read every ramp entry back, so treat
-                # Relative mode as "scale the default 1.0 ramp by the
-                # slider value" — matches the doc's intent of preserving
-                # per-strand variation for the batch attributes we do
-                # store on the creator itself.
+        # Resolve scaleProfileX/Y so each is written at most once per
+        # Apply (previous plan wrote thickness *then* width to X, which
+        # cancelled thickness in Absolute and double-applied it in
+        # Relative). Convention: sliders at their identity value
+        # (1.0 for scales, 0.0 for twist) mean "no change".
+        scalar_plan = []
+        if thickness != 1.0:
+            # Uniform scale wins over per-axis overrides.
+            scalar_plan.append(("scaleProfileX", thickness))
+            scalar_plan.append(("scaleProfileY", thickness))
+        else:
+            if width != 1.0:
+                scalar_plan.append(("scaleProfileX", width))
+            if height_v != 1.0:
+                scalar_plan.append(("scaleProfileY", height_v))
+        if twist != 0.0:
+            scalar_plan.append(("twistAngle", twist))
+        # Subdivision applies only in Absolute mode — Relative
+        # multiplication of an integer count is ill-defined.
+        if is_absolute:
+            scalar_plan.append(("interpolationSteps", subdiv))
+
+        with batch.batch_undo_chunk("HairBatchApply"):
+            for attr, value in scalar_plan:
+                if is_absolute:
+                    batch.apply_absolute(creators, attr, value)
+                else:
+                    batch.apply_relative(creators, attr, value)
+
+            # Taper (Root / Middle / Tip) — read the current ramp per
+            # strand so a slider left at 1.0 preserves the existing
+            # value (Absolute) or is a 1× no-op (Relative).
+            for c in creators:
+                existing = hair.read_taper_values(c)
+                if is_absolute:
+                    new_r = root if root != 1.0 else existing[0]
+                    new_m = middle if middle != 1.0 else existing[1]
+                    new_t = tip if tip != 1.0 else existing[2]
+                else:
+                    new_r = existing[0] * root
+                    new_m = existing[1] * middle
+                    new_t = existing[2] * tip
                 hair.set_taper_profile(
                     c,
-                    root_scale=root_value,
-                    tip_scale=tip_value,
+                    root_scale=new_r,
+                    middle_scale=new_m,
+                    tip_scale=new_t,
                 )
-                _ = current  # reserved for future full-ramp readback
 
     # -----------------------------------------------------------------
     # Footer
@@ -369,9 +399,15 @@ def _resolve_latest_sha():
             return json.loads(
                 resp.read().decode("utf-8"))["commit"]["sha"]
     except Exception as exc:
-        print("[{0}] SHA lookup failed ({1}); falling back to {2}".format(
-            _PACKAGE, exc, _GITHUB_BRANCH))
-        return _GITHUB_BRANCH
+        # Do NOT fall back to branch-name URL (patterns doc §1-7:
+        # raw.githubusercontent.com CDN caches by path only, so a
+        # branch URL would serve stale content). Raise so the caller's
+        # try/except can surface a proper error dialog.
+        raise RuntimeError(
+            "SHA lookup failed for branch {0!r}: {1}\n"
+            "Refusing to fall back to branch-name URL (would hit CDN "
+            "cache and serve stale content). Check network / GitHub "
+            "status and try again.".format(_GITHUB_BRANCH, exc))
 
 
 def update_from_github(*_args):
@@ -389,10 +425,14 @@ def _run_update():
     import traceback
     import urllib.request
 
-    sha = _resolve_latest_sha()
-    url = "{0}/{1}/install.py".format(_GITHUB_RAW_BASE, sha)
-    print("[{0}] update: fetching {1}".format(_PACKAGE, url))
+    # Resolve SHA and fetch install.py — either step can fail
+    # (offline / rate-limited / DNS / branch missing). Surface a single
+    # unified error dialog rather than an uncaught exception in the
+    # Script Editor.
     try:
+        sha = _resolve_latest_sha()
+        url = "{0}/{1}/install.py".format(_GITHUB_RAW_BASE, sha)
+        print("[{0}] update: fetching {1}".format(_PACKAGE, url))
         req = urllib.request.Request(url, headers={
             "Cache-Control": "no-cache",
             "User-Agent": "{0}-updater/{1}".format(_PACKAGE, sha[:10]),
@@ -400,9 +440,11 @@ def _run_update():
         source = urllib.request.urlopen(req, timeout=30).read()
     except Exception as exc:
         traceback.print_exc()
-        cmds.confirmDialog(title="Update failed",
-                           message="install.py fetch failed:\n{0}".format(exc),
-                           button=["OK"])
+        cmds.confirmDialog(
+            title="Update failed",
+            message="Update from GitHub failed:\n{0}\n\n"
+                    "See Script Editor for full traceback.".format(exc),
+            button=["OK"])
         return
 
     if cmds.window(WINDOW_NAME, exists=True):

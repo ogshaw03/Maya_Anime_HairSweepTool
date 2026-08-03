@@ -32,16 +32,34 @@ def _ensure_maya() -> None:
 
 
 def load_sweep_plugin() -> None:
-    """Ensure the SweepMesh plugin is loaded."""
+    """Ensure the SweepMesh plugin is loaded.
+
+    Maya's Sweep Mesh feature has shipped under two plugin names across
+    versions (``sweep`` in 2022+, historical ``sweepMesh``). Try both
+    and warn only if *neither* loaded — otherwise a downstream
+    ``createNode('sweepMeshCreator')`` would fail with "unknown node
+    type" and the actual cause (missing plugin) is invisible.
+    """
     _ensure_maya()
+    loaded = False
     for plugin in ("sweep", "sweepMesh"):
         try:
-            if not cmds.pluginInfo(plugin, query=True, loaded=True):
-                cmds.loadPlugin(plugin, quiet=True)
+            if cmds.pluginInfo(plugin, query=True, loaded=True):
+                loaded = True
+                continue
+            cmds.loadPlugin(plugin, quiet=True)
+            if cmds.pluginInfo(plugin, query=True, loaded=True):
+                loaded = True
         except Exception:
-            # Plugin name differs between Maya versions; ignore failures
-            # for one and rely on the other being present.
+            # This plugin name isn't valid for this Maya version — try
+            # the other one in the loop.
             pass
+    if not loaded:
+        cmds.warning(
+            "[maya_hair_tool] failed to load the Sweep Mesh plugin "
+            "('sweep' or 'sweepMesh'). This tool requires Maya 2022+ "
+            "with the Sweep Mesh feature; sweepMeshCreator creation "
+            "will fail with 'unknown node type' without it.")
 
 
 def selected_curves() -> List[str]:

@@ -121,10 +121,22 @@ def _duplicate_one(
     name_hint = _unique_hair_name(src_curve, src_mesh)
 
     # 1) Duplicate the guide curve. rr = returnRootsOnly.
-    dup_curve = cmds.duplicate(
-        src_curve, returnRootsOnly=True,
-        name=name_hint + C.HAIR_CURVE_SUFFIX,
-    )[0]
+    try:
+        dup_result = cmds.duplicate(
+            src_curve, returnRootsOnly=True,
+            name=name_hint + C.HAIR_CURVE_SUFFIX,
+        ) or []
+    except Exception as exc:
+        cmds.warning(
+            "[maya_hair_tool] guide curve duplicate failed for "
+            "{0!r}: {1}".format(src_curve, exc))
+        return None
+    if not dup_result:
+        cmds.warning(
+            "[maya_hair_tool] guide curve duplicate returned nothing "
+            "for {0!r}; skipped".format(src_curve))
+        return None
+    dup_curve = dup_result[0]
     if any(offset):
         cmds.move(offset[0], offset[1], offset[2], dup_curve,
                   relative=True, worldSpace=True)
@@ -164,15 +176,24 @@ def _copy_scalar_attrs(src: str, dst: str) -> None:
         if cmds.connectionInfo(src_full, isDestination=True):
             continue
         dst_full = "{0}.{1}".format(dst, attr)
+        # Also skip if the destination is already being driven — force
+        # setting it would break the driver relationship and give a
+        # confusing "value stuck at input" behavior.
+        if cmds.connectionInfo(dst_full, isDestination=True):
+            continue
         try:
             value = cmds.getAttr(src_full)
             if isinstance(value, str):
                 cmds.setAttr(dst_full, value, type="string")
             else:
                 cmds.setAttr(dst_full, value)
-        except Exception:
+        except Exception as exc:
             # Attribute might be locked or of an unsupported type.
-            pass
+            # Warn so users can spot when a duplicate silently omits
+            # a preset attribute (e.g. a Maya-version-dependent name).
+            cmds.warning(
+                "[maya_hair_tool] copy {0} -> {1} failed: {2}".format(
+                    src_full, dst_full, exc))
 
 
 def _copy_scale_profile_ramp(src: str, dst: str) -> None:
@@ -254,15 +275,37 @@ def _duplicate_custom_profile_curve(src: str, dst: str,
     if not src_curve:
         return
 
-    dup_profile = cmds.duplicate(
-        src_curve, returnRootsOnly=True,
-        name=name_hint + "_profile",
-    )[0]
+    try:
+        dup_result = cmds.duplicate(
+            src_curve, returnRootsOnly=True,
+            name=name_hint + "_profile",
+        ) or []
+    except Exception as exc:
+        cmds.warning(
+            "[maya_hair_tool] custom profile duplicate failed: "
+            "{0}".format(exc))
+        return
+    if not dup_result:
+        return
+    dup_profile = dup_result[0]
+
+    # Filter intermediate shapes ("...Orig" from Maya's construction
+    # history): connecting to an intermediate would put the profile on
+    # the deformer stack input instead of the visible curve and the
+    # duplicate would look wrong.
     dup_shapes = cmds.listRelatives(dup_profile, shapes=True,
                                     fullPath=True) or []
-    if not dup_shapes:
+    dup_shape = None
+    for shape in dup_shapes:
+        try:
+            if cmds.getAttr(shape + ".intermediateObject"):
+                continue
+        except Exception:
+            pass
+        dup_shape = shape
+        break
+    if dup_shape is None:
         return
-    dup_shape = dup_shapes[0]
 
     # Match the source's plug type — worldSpace vs local.
     src_plug_name = incoming[0].split(".", 1)[1]
@@ -272,8 +315,10 @@ def _duplicate_custom_profile_curve(src: str, dst: str,
             "{0}.{1}".format(dst, src_attr),
             force=True,
         )
-    except Exception:
-        pass
+    except Exception as exc:
+        cmds.warning(
+            "[maya_hair_tool] custom profile connect failed: "
+            "{0}".format(exc))
 
 
 def _match_parent(src_mesh: Optional[str], new_mesh: Optional[str]) -> None:
@@ -284,8 +329,13 @@ def _match_parent(src_mesh: Optional[str], new_mesh: Optional[str]) -> None:
         return
     try:
         cmds.parent(new_mesh, parents[0])
-    except RuntimeError:
-        pass
+    except RuntimeError as exc:
+        # Parenting can legitimately fail (e.g. already under the same
+        # group) — warn so the user knows why the duplicate isn't
+        # grouped, instead of a silent "world root" placement.
+        cmds.warning(
+            "[maya_hair_tool] could not parent {0} under {1}: "
+            "{2}".format(new_mesh, parents[0], exc))
 
 
 def _shape_to_transform(node: str) -> Optional[str]:
@@ -320,8 +370,10 @@ def _unique_hair_name(src_curve: str, src_mesh: Optional[str]) -> str:
 
     i = 1
     candidate = base
-    while cmds.objExists(candidate + C.HAIR_MESH_SUFFIX) or \
-            cmds.objExists(candidate + C.HAIR_CURVE_SUFFIX):
+    while (cmds.objExists(candidate + C.HAIR_MESH_SUFFIX)
+            or cmds.objExists(candidate + C.HAIR_CURVE_SUFFIX)
+            or cmds.objExists(candidate + C.HAIR_SWEEP_SUFFIX)
+            or cmds.objExists(candidate + "_profile")):
         i += 1
         candidate = "{0}_{1:02d}".format(base, i)
     return candidate

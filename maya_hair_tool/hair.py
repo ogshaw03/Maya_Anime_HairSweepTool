@@ -56,6 +56,7 @@ def create_hair_from_selected_curves(
         return []
 
     created: List[str] = []
+    created_meshes: List[str] = []
     hair_group = _ensure_hair_group() if group else None
 
     for curve in curves:
@@ -80,12 +81,21 @@ def create_hair_from_selected_curves(
         if hair_group and cmds.objExists(mesh_xform):
             try:
                 cmds.parent(mesh_xform, hair_group)
-            except RuntimeError:
-                pass
+            except RuntimeError as exc:
+                cmds.warning(
+                    "[maya_hair_tool] could not parent {0} under {1}: "
+                    "{2}".format(mesh_xform, hair_group, exc))
 
         created.append(creator)
+        if mesh_xform:
+            created_meshes.append(mesh_xform)
 
-    if created:
+    # Select the mesh transforms so users see the result in the viewport;
+    # selecting the sweepMeshCreator (a DG node) leaves nothing visibly
+    # highlighted and makes the next Duplicate press confusing.
+    if created_meshes:
+        cmds.select(created_meshes, replace=True)
+    elif created:
         cmds.select(created, replace=True)
     return created
 
@@ -131,19 +141,44 @@ def _apply_settings(
     subdivisions_axis: Optional[int] = None,
     subdivisions_length: Optional[int] = None,
 ) -> None:
-    """Apply the given values to ``creator``. ``None`` skips the attribute."""
+    """Apply the given values to ``creator``.
+
+    Semantics for the size / rotation attributes (avoids overwriting
+    ``set_profile``'s per-preset tweaks and avoids the UI passing 1.0
+    default sliders that would silently override a Thickness change):
+
+    * ``profile`` is applied first. It may set ``scaleProfileY`` and
+      ``rotateProfile`` for Oval/Flat/Sharp/Diamond presets.
+    * ``thickness`` (uniform scale) is treated as a shorthand: if it
+      differs from the identity value (1.0), it wins over ``width`` /
+      ``height``. Otherwise ``width`` / ``height`` are applied
+      individually.
+    * ``width`` / ``height`` / ``rotation`` only override the profile's
+      preset values if the caller passed a non-identity value
+      (i.e. the user actually moved the slider away from its default),
+      so a slider still parked at 1.0 / 0.0 does not blast the preset.
+    * ``None`` still means "skip entirely" (existing attribute untouched).
+    """
     if profile is not None:
         set_profile(creator, profile)
-    if thickness is not None:
+
+    # Thickness = uniform scale shorthand. Non-identity wins over
+    # width/height so a lone Thickness slider is not silently
+    # overridden by width/height defaults.
+    if thickness is not None and float(thickness) != 1.0:
         _safe_set(creator, "scaleProfileX", float(thickness))
         _safe_set(creator, "scaleProfileY", float(thickness))
-    if width is not None:
-        _safe_set(creator, "scaleProfileX", float(width))
-    if height is not None:
-        _safe_set(creator, "scaleProfileY", float(height))
-    if twist is not None:
+    else:
+        if width is not None and float(width) != 1.0:
+            _safe_set(creator, "scaleProfileX", float(width))
+        if height is not None and float(height) != 1.0:
+            _safe_set(creator, "scaleProfileY", float(height))
+
+    if twist is not None and float(twist) != 0.0:
         _safe_set(creator, "twistAngle", float(twist))
-    if rotation is not None:
+    # rotation only overrides when the user explicitly moved it —
+    # otherwise Sharp/Diamond presets' 45° would be reset to 0.
+    if rotation is not None and float(rotation) != 0.0:
         _safe_set(creator, "rotateProfile", float(rotation))
     if subdivisions_axis is not None:
         _safe_set(creator, "interpolationSteps", int(subdivisions_axis))
@@ -192,11 +227,26 @@ def set_taper_profile(
     entries drive the profile scale from root (position 0) to tip
     (position 1). We author three entries so the strand can taper from
     root → middle → tip in a way that reads well for anime hair.
+
+    ``None`` for any of the three scales means "preserve whatever value
+    is currently at that position". This lets Batch Edit change only
+    Root/Tip without resetting Middle to a default.
     """
-    ramp_attr = creator + ".scaleProfile"
     if not cmds.attributeQuery("scaleProfile", node=creator, exists=True):
         return
 
+    # If any of the three is unspecified, read the existing ramp so we
+    # can preserve those positions instead of overwriting with defaults.
+    if root_scale is None or middle_scale is None or tip_scale is None:
+        existing = read_taper_values(creator)
+        if root_scale is None:
+            root_scale = existing[0]
+        if middle_scale is None:
+            middle_scale = existing[1]
+        if tip_scale is None:
+            tip_scale = existing[2]
+
+    ramp_attr = creator + ".scaleProfile"
     # Clear existing entries first.
     indices = cmds.getAttr(ramp_attr, multiIndices=True) or []
     for idx in indices:
@@ -206,19 +256,66 @@ def set_taper_profile(
         except Exception:
             pass
 
-    r = C.DEFAULT_ROOT_SCALE if root_scale is None else float(root_scale)
-    m = C.DEFAULT_MIDDLE_SCALE if middle_scale is None else float(middle_scale)
-    t = C.DEFAULT_TIP_SCALE if tip_scale is None else float(tip_scale)
-
     entries = [
-        (0.0, r, 2),   # root
-        (0.5, m, 2),   # middle
-        (1.0, t, 2),   # tip
+        (0.0, float(root_scale), 2),    # root
+        (0.5, float(middle_scale), 2),  # middle
+        (1.0, float(tip_scale), 2),     # tip
     ]
     for i, (pos, val, interp) in enumerate(entries):
         cmds.setAttr("{0}[{1}].scaleProfile_Position".format(ramp_attr, i), pos)
         cmds.setAttr("{0}[{1}].scaleProfile_FloatValue".format(ramp_attr, i), val)
         cmds.setAttr("{0}[{1}].scaleProfile_Interp".format(ramp_attr, i), interp)
+
+
+def read_taper_values(creator: str) -> tuple:
+    """Return ``(root, middle, tip)`` from the current ``scaleProfile`` ramp.
+
+    Reads whatever entries are currently on the sweepMeshCreator and
+    returns the values at (or closest to) positions 0.0, 0.5, 1.0.
+    Falls back to the module defaults when the ramp is empty or
+    missing an entry near a given position — that way callers can
+    treat the return value as a safe baseline for Absolute/Relative
+    Batch Edit.
+    """
+    defaults = (
+        C.DEFAULT_ROOT_SCALE,
+        C.DEFAULT_MIDDLE_SCALE,
+        C.DEFAULT_TIP_SCALE,
+    )
+    if not cmds.attributeQuery("scaleProfile", node=creator, exists=True):
+        return defaults
+
+    ramp_attr = creator + ".scaleProfile"
+    indices = cmds.getAttr(ramp_attr, multiIndices=True) or []
+    if not indices:
+        return defaults
+
+    entries = []  # list of (position, value)
+    for idx in indices:
+        try:
+            pos = cmds.getAttr(
+                "{0}[{1}].scaleProfile_Position".format(ramp_attr, idx))
+            val = cmds.getAttr(
+                "{0}[{1}].scaleProfile_FloatValue".format(ramp_attr, idx))
+            entries.append((float(pos), float(val)))
+        except Exception:
+            continue
+
+    if not entries:
+        return defaults
+
+    def _closest(target_pos, fallback):
+        best = min(entries, key=lambda pv: abs(pv[0] - target_pos))
+        # If nothing is close enough, fall back to the default.
+        if abs(best[0] - target_pos) > 0.25:
+            return fallback
+        return best[1]
+
+    return (
+        _closest(0.0, defaults[0]),
+        _closest(0.5, defaults[1]),
+        _closest(1.0, defaults[2]),
+    )
 
 
 def _safe_set(node: str, attr: str, value) -> None:
@@ -227,10 +324,13 @@ def _safe_set(node: str, attr: str, value) -> None:
         return
     try:
         cmds.setAttr(full, value)
-    except Exception:
-        # Attribute might be locked or connected — skip silently. The user
-        # can still inspect the failure via the script editor.
-        pass
+    except Exception as exc:
+        # Attribute might be locked / connected / of incompatible type.
+        # Surface a Maya warning so the user gets feedback (a silent
+        # skip made typo'd attribute names impossible to debug).
+        cmds.warning(
+            "[maya_hair_tool] setAttr {0} = {1!r} failed: {2}".format(
+                full, value, exc))
 
 
 # ---------------------------------------------------------------------------
