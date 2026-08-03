@@ -33,7 +33,7 @@
 
 <!-- 追記はこの下から。最新エントリが下に来る。 -->
 
-## 2026-08-04 (web) — セッション同期運用の設計 + 骨格構築
+## 2026-08-04 (local) — セッション同期運用の設計 + 骨格構築
 
 ### やったこと
 - 引き継ぎ資料一式 (HANDOFF.md, maya-hot-update-patterns.md,
@@ -83,5 +83,47 @@
 - [ ] (担当: local) `/session-sync` 実行 → v0.2.0 を実機インストール
       (`MAYA_HAIR_TOOL_USE_LOCAL=1` でローカル配布モード) →
       HANDOFF § 6-2, § 6-3 の手順を通し実行 → 結果を SESSION_LOG に記録
+- [ ] (担当: 次に開いた側) Phase 3 実装と main への初回 merge の
+      優先順位をユーザーに確認して着手
+
+---
+
+## 2026-08-04 (local) — スモークテスト + 過去エントリ訂正 + web セッション対応メモ
+
+### やったこと
+- `/session-sync` を初回実行、Step 1 (git status / SESSION_LOG.md tail /
+  ref 比較) が正常動作することを確認
+- Fast-forward merge 完了 (`7ac5b38..1b5657f`) を HEAD 比較で再確認、
+  remote と完全同期
+- 直前エントリの `(web)` タグを `(local)` に訂正 (自己認識ミスの修正)。
+  実際は前 web セッションから引き継ぎを受けた本 local セッションが
+  `/session-sync` 骨格構築・SESSION_LOG.md 新設・HANDOFF §12 追記を
+  全て実施していた
+
+### 検討した代替案
+- 特になし (smoke test + 訂正回)
+
+### 悩みどころ / 未確定
+- **web セッションで /session-sync が discovery されない問題** —
+  元開発の cloud Claude Code セッションでは `/session-sync` が
+  未認識エラーになる。原因分析:
+  - `.claude/commands/session-sync.md` を追加したのは commit `7b8ec17`
+  - web セッションはそれ以前の ref で開かれた sandbox なので
+    ファイルが repo に存在しない
+  - user-level `~/.claude/commands/` は cloud sandbox に反映されない
+    (ローカル PC の dotfile)
+  - Claude Code は起動時に commands を scan するので、
+    session 中に file を追加しても runtime では認識されない
+- 上記への対処: web 側で `git pull` → 一度セッションを閉じて開き直す
+- フォールバック: 手動で「SESSION_LOG.md 末尾 + HANDOFF §4 を読んで
+  workflow に従って」と指示すれば slash command 無しでも同等動作
+
+### 次にやること
+- [ ] (担当: user) web セッションで
+      `git pull origin claude/maya-anime-hair-sweep-5zpemq` 実行 →
+      セッション再起動 → `/session-sync` discovery 確認
+- [ ] (担当: local, 次回) v0.2.0 実機インストール
+      (`MAYA_HAIR_TOOL_USE_LOCAL=1`) → HANDOFF § 6-2 / § 6-3 通し実行 →
+      結果を SESSION_LOG に記録
 - [ ] (担当: 次に開いた側) Phase 3 実装と main への初回 merge の
       優先順位をユーザーに確認して着手
