@@ -96,6 +96,25 @@ class HairBuilderUI(object):
         self.taper_editor = None
         self._taper_syncing = False
 
+        # Adjustment mode:
+        #   'creation' → nothing selected; sliders act as defaults
+        #                for the next 「毛束を生成」click.
+        #   'absolute' → exactly one strand selected; sliders reflect
+        #                its current attribute values and edits set
+        #                absolute values.
+        #   'relative' → multiple strands or a group / 全体 selected;
+        #                sliders are multipliers (identity = 1.0)
+        #                applied on top of the per-strand baselines
+        #                snapshotted at selection time.
+        self._adjust_mode = "creation"
+        self._baselines = {}
+        # Widget id set in _build_create_panel; updated from the
+        # selection handler.
+        self.mode_indicator = None
+        # Re-entrancy guard: setting slider values programmatically
+        # would otherwise fire drag/change callbacks and re-apply.
+        self._syncing_sliders = False
+
         # Curve panel widgets (create-a-curve shortcuts).
         self.curve_length = None
         self.curve_cv_count = None
@@ -189,21 +208,22 @@ class HairBuilderUI(object):
                 self._script_jobs.append(jid)
             except Exception:
                 pass
-        # SelectionChanged drives the inline taper editor sync so the
-        # widget always mirrors the strand you're currently editing.
+        # SelectionChanged drives the adjustment-mode dispatch
+        # (creation / absolute / relative) AND the taper editor
+        # sync — both need to react to a new strand being picked.
         try:
             jid = cmds.scriptJob(
                 parent=WINDOW_NAME,
-                event=["SelectionChanged",
-                        self._sync_taper_editor_from_creator])
+                event=["SelectionChanged", self._on_selection_changed])
             self._script_jobs.append(jid)
         except Exception:
             pass
 
         cmds.showWindow(WINDOW_NAME)
-        # Populate the list + taper editor once on show.
+        # Populate list + kick the mode dispatch once so the panel
+        # header shows the right mode from the start.
         self._refresh_hair_list()
-        self._sync_taper_editor_from_creator()
+        self._on_selection_changed()
 
     # -----------------------------------------------------------------
     # Hair list panel — enumerate strands tagged animeHairTool so the
@@ -567,16 +587,22 @@ class HairBuilderUI(object):
     # Create Hair panel
     # -----------------------------------------------------------------
     def _build_create_panel(self, parent):
-        cmds.frameLayout(label="毛束を作成", collapsable=False,
+        cmds.frameLayout(label="毛束を作成 / 調整", collapsable=False,
                          marginHeight=6, marginWidth=6, parent=parent)
         col = cmds.columnLayout(adjustableColumn=True, rowSpacing=4)
 
+        # Mode indicator — updated by _on_selection_changed.
+        self.mode_indicator = cmds.text(
+            label="モード: 生成モード (未選択)",
+            align="left", font="boldLabelFont", parent=col,
+        )
         cmds.text(
-            label=("毛束 (カーブ / メッシュ / sweep) を選択中は\n"
-                   "スライダーの調整がリアルタイムで反映されます。\n"
-                   "何も選択していない場合は次回「毛束を生成」時の\n"
-                   "初期値として使われます。"),
+            label=("・未選択 → 生成モード。スライダー値は「毛束を生成」の初期値になります。\n"
+                   "・毛束 1 本選択 → 個別絶対モード。スライダーはその毛束の現在値を表示、絶対値で編集。\n"
+                   "・グループ / [全体] / 複数選択 → 相対乗算モード。スライダー×1.0 = 変化なし、"
+                   "×2.0 で全対象を 2 倍等、各毛束の個性を保ちつつまとめて調整。"),
             align="left", parent=col, font="smallObliqueLabelFont",
+            wordWrap=True,
         )
 
         cmds.text(label="プロファイル", align="left", parent=col)
@@ -668,6 +694,192 @@ class HairBuilderUI(object):
             except Exception as exc:
                 cmds.warning(
                     "AE を開けませんでした: {0}".format(exc))
+
+    # -----------------------------------------------------------------
+    # Adjust-mode dispatch (creation / absolute / relative)
+    # -----------------------------------------------------------------
+    # Attributes we snapshot per strand when entering relative mode.
+    # Kept in one place so the setters and the snapshot stay in sync.
+    _BASELINE_SCALAR_ATTRS = (
+        "scaleProfileX",
+        "scaleProfileY",
+        "scaleProfileUniform",
+        "twist",
+        "rotateProfile",
+        "profilePolySides",
+        "interpolationPrecision",
+    )
+
+    def _update_mode_indicator(self, msg):
+        if self.mode_indicator:
+            try:
+                cmds.text(self.mode_indicator, edit=True, label=msg)
+            except Exception:
+                pass
+
+    def _snapshot_baselines(self, creators):
+        """Read every relative-mode attribute (scalars + taper ramp)
+        for each creator and stash it in ``self._baselines`` so the
+        setters can compute ``value = baseline × slider``."""
+        self._baselines = {}
+        for c in creators:
+            values = {}
+            for attr in self._BASELINE_SCALAR_ATTRS:
+                if cmds.attributeQuery(attr, node=c, exists=True):
+                    try:
+                        values[attr] = cmds.getAttr(c + "." + attr)
+                    except Exception:
+                        pass
+            try:
+                r, m, t = hair.read_taper_values(c)
+                values["taper_root"] = r
+                values["taper_middle"] = m
+                values["taper_tip"] = t
+            except Exception:
+                pass
+            self._baselines[c] = values
+
+    def _reset_sliders_to_identity(self):
+        """Snap every Create-panel slider to its multiplier identity
+        (1.0 for scales, 0.0 for angles, defaults for subdiv). Guarded
+        by ``_syncing_sliders`` so the programmatic writes don't fire
+        the live-edit callbacks."""
+        self._syncing_sliders = True
+        try:
+            pairs_float = (
+                (self.thickness, 1.0),
+                (self.width, 1.0),
+                (self.height, 1.0),
+                (self.root, 1.0),
+                (self.middle, 1.0),
+                (self.tip, 1.0),
+                (self.twist, 0.0),
+                (self.rotation, 0.0),
+            )
+            for w, v in pairs_float:
+                if w:
+                    try:
+                        cmds.floatSliderGrp(w, edit=True, value=v)
+                    except Exception:
+                        pass
+            pairs_int = (
+                (self.subdiv_axis, C.DEFAULT_SUBDIVISIONS_AXIS),
+                (self.subdiv_length, C.DEFAULT_SUBDIVISIONS_LENGTH),
+            )
+            for w, v in pairs_int:
+                if w:
+                    try:
+                        cmds.intSliderGrp(w, edit=True, value=v)
+                    except Exception:
+                        pass
+        finally:
+            self._syncing_sliders = False
+
+    def _sync_sliders_to_creator(self, creator):
+        """Absolute mode: pull the strand's current values into the
+        sliders so users see (and edit) what it actually is."""
+        self._syncing_sliders = True
+        try:
+            def _get(attr, default):
+                if cmds.attributeQuery(attr, node=creator, exists=True):
+                    try:
+                        return cmds.getAttr(creator + "." + attr)
+                    except Exception:
+                        return default
+                return default
+
+            x = _get("scaleProfileX", C.DEFAULT_WIDTH)
+            y = _get("scaleProfileY", C.DEFAULT_HEIGHT)
+            twist_v = _get("twist", C.DEFAULT_TWIST)
+            rot_v = _get("rotateProfile", C.DEFAULT_ROTATION)
+            sides = _get("profilePolySides",
+                         C.DEFAULT_SUBDIVISIONS_AXIS)
+            prec = _get("interpolationPrecision",
+                        C.DEFAULT_SUBDIVISIONS_LENGTH)
+
+            # Thickness ≈ scaleProfileUniform-mode X. When Uniform is
+            # on the two are equal; when off, Thickness reflecting X
+            # is still a reasonable proxy.
+            for w, v in (
+                (self.thickness, x),
+                (self.width, x),
+                (self.height, y),
+                (self.twist, twist_v),
+                (self.rotation, rot_v),
+            ):
+                if w:
+                    try:
+                        cmds.floatSliderGrp(w, edit=True, value=float(v))
+                    except Exception:
+                        pass
+            for w, v in (
+                (self.subdiv_axis, sides),
+                (self.subdiv_length, prec),
+            ):
+                if w:
+                    try:
+                        cmds.intSliderGrp(w, edit=True, value=int(v))
+                    except Exception:
+                        pass
+
+            try:
+                r, m, t = hair.read_taper_values(creator)
+                for widget, val in (
+                    (self.root, r), (self.middle, m), (self.tip, t)
+                ):
+                    if widget:
+                        try:
+                            cmds.floatSliderGrp(
+                                widget, edit=True, value=float(val))
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+        finally:
+            self._syncing_sliders = False
+
+    def _on_selection_changed(self, *_):
+        """Called from the SelectionChanged scriptJob (fires on
+        viewport / Outliner / tree edits). Decides which mode the
+        Create panel should be in and refreshes sliders + indicator
+        accordingly. Also drives the inline taper editor sync."""
+        # Determine mode from the tree selection first — a tree row of
+        # [全体] / group means relative even when only one strand is
+        # under it. Fall back to scene selection when the tree isn't
+        # showing.
+        mode, tree_targets = self._resolve_tree_selection()
+        creators = su.sweep_creators_from_selection()
+        if not creators and tree_targets:
+            creators = su.sweep_creators_from_nodes(tree_targets)
+        creators = list(dict.fromkeys(creators))
+
+        if not creators:
+            self._adjust_mode = "creation"
+            self._baselines = {}
+            self._update_mode_indicator("モード: 生成モード (未選択)")
+        elif mode == "strand" and len(creators) == 1:
+            self._adjust_mode = "absolute"
+            self._baselines = {}
+            self._sync_sliders_to_creator(creators[0])
+            leaf = (tree_targets[0].split("|")[-1]
+                    if tree_targets else creators[0])
+            self._update_mode_indicator(
+                "モード: 個別絶対 — {0}".format(leaf))
+        else:
+            self._adjust_mode = "relative"
+            self._snapshot_baselines(creators)
+            self._reset_sliders_to_identity()
+            scope = "[全体]" if mode == "all" else (
+                "グループ" if mode == "group" else "複数")
+            self._update_mode_indicator(
+                "モード: 相対乗算 — {0} ({1} 本)".format(
+                    scope, len(creators)))
+
+        # Keep the taper editor in sync (single-strand only — for a
+        # multi-strand relative selection there's no unambiguous
+        # taperCurve to show).
+        if self._adjust_mode == "absolute":
+            self._sync_taper_editor_from_creator()
 
     # -----------------------------------------------------------------
     # Inline taper curve editor (gradientControlNoAttr wrapper)
@@ -845,6 +1057,11 @@ class HairBuilderUI(object):
     #     interaction as one step.
     # -----------------------------------------------------------------
     def _live_apply(self, setter, record_undo):
+        # Programmatic slider writes (mode switch, reset, absolute
+        # sync) must not round-trip back through the setter and
+        # multiply values a second time.
+        if self._syncing_sliders:
+            return
         creators = su.sweep_creators_from_selection()
         if not creators:
             return
@@ -888,6 +1105,20 @@ class HairBuilderUI(object):
             "可能性があります (このメッセージはセッション中 1 回のみ"
             "表示)".format(attr))
 
+    def _resolve_value(self, c, attr, slider_value, cast=float):
+        """Absolute mode: return the raw slider value.
+        Relative mode: return baseline[attr] × slider_value.
+
+        Returns a value already cast to the correct numeric type."""
+        if self._adjust_mode == "relative":
+            baseline = self._baselines.get(c, {}).get(attr)
+            if baseline is None:
+                # Nothing to multiply — snapshot missed this attr,
+                # so treat slider value as absolute (safer fallback).
+                return cast(slider_value)
+            return cast(float(baseline) * float(slider_value))
+        return cast(slider_value)
+
     def _set_uniform_scale(self, value):
         """Set Thickness = uniform scale.
 
@@ -895,9 +1126,12 @@ class HairBuilderUI(object):
         on, then set ``scaleProfileX`` — Y auto-mirrors. Preset ratios
         (Oval Y=0.55 etc.) are lost when Thickness is touched; that
         matches Maya's Uniform-mode behaviour.
+
+        In relative mode, ``value`` is a multiplier: X is set to
+        ``baseline_X × value``. Y follows via the Uniform toggle.
         """
         def setter(c):
-            v = float(value)
+            v = self._resolve_value(c, "scaleProfileX", value, cast=float)
             if cmds.attributeQuery("scaleProfileUniform",
                                     node=c, exists=True):
                 cmds.setAttr(c + ".scaleProfileUniform", True)
@@ -911,13 +1145,16 @@ class HairBuilderUI(object):
 
     def _set_axis_scale(self, axis_attr, value):
         """Set Width (X) or Height (Y) independently by first turning
-        Uniform off so the sibling axis isn't force-linked."""
+        Uniform off so the sibling axis isn't force-linked.
+
+        In relative mode, uses ``baseline[axis_attr] × value``."""
         def setter(c):
+            v = self._resolve_value(c, axis_attr, value, cast=float)
             if cmds.attributeQuery("scaleProfileUniform",
                                     node=c, exists=True):
                 cmds.setAttr(c + ".scaleProfileUniform", False)
             if cmds.attributeQuery(axis_attr, node=c, exists=True):
-                cmds.setAttr(c + "." + axis_attr, float(value))
+                cmds.setAttr(c + "." + axis_attr, v)
             else:
                 self._warn_missing(axis_attr)
         return setter
@@ -927,21 +1164,36 @@ class HairBuilderUI(object):
             if not cmds.attributeQuery(attr, node=c, exists=True):
                 self._warn_missing(attr)
                 return
-            cmds.setAttr(c + "." + attr, cast(value))
+            v = self._resolve_value(c, attr, value, cast=cast)
+            cmds.setAttr(c + "." + attr, v)
         return setter
 
     def _set_taper(self, root=None, middle=None, tip=None):
         def setter(c):
             existing = hair.read_taper_values(c)
-            r = existing[0] if root is None else float(root)
-            m = existing[1] if middle is None else float(middle)
-            t = existing[2] if tip is None else float(tip)
+            if self._adjust_mode == "relative":
+                # Multiply per-strand baseline (captured at select
+                # time) by the slider multiplier. Positions the
+                # user didn't touch (None sliders) stay untouched.
+                baseline = self._baselines.get(c, {})
+                br = baseline.get("taper_root", existing[0])
+                bm = baseline.get("taper_middle", existing[1])
+                bt = baseline.get("taper_tip", existing[2])
+                r = float(br) * float(root) if root is not None else existing[0]
+                m = float(bm) * float(middle) if middle is not None else existing[1]
+                t = float(bt) * float(tip) if tip is not None else existing[2]
+            else:
+                r = existing[0] if root is None else float(root)
+                m = existing[1] if middle is None else float(middle)
+                t = existing[2] if tip is None else float(tip)
             hair.set_taper_profile(
                 c, root_scale=r, middle_scale=m, tip_scale=t)
         return setter
 
     # --- Profile ---
     def _cb_profile_change(self, *_):
+        if self._syncing_sliders:
+            return
         label = cmds.optionMenu(
             self.profile_menu, query=True, value=True)
         key = _PROFILE_LABEL_TO_KEY.get(label, C.PROFILE_CIRCLE)
