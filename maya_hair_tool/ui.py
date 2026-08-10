@@ -57,6 +57,11 @@ class HairBuilderUI(object):
     """
 
     def __init__(self):
+        # Curve panel widgets (create-a-curve shortcuts).
+        self.curve_length = None
+        self.curve_cv_count = None
+        self.curve_axis_menu = None
+
         # Create panel widgets.
         self.profile_menu = None
         self.thickness = None
@@ -98,6 +103,8 @@ class HairBuilderUI(object):
         root = cmds.columnLayout(adjustableColumn=True, rowSpacing=6,
                                  columnAttach=("both", 8))
 
+        self._build_curve_panel(root)
+        cmds.separator(height=8, style="in")
         self._build_create_panel(root)
         cmds.separator(height=8, style="in")
         self._build_duplicate_panel(root)
@@ -107,6 +114,77 @@ class HairBuilderUI(object):
         self._build_footer(root)
 
         cmds.showWindow(WINDOW_NAME)
+
+    # -----------------------------------------------------------------
+    # Curve panel — shortcuts for when the user has no curve yet
+    # -----------------------------------------------------------------
+    def _build_curve_panel(self, parent):
+        cmds.frameLayout(label="Curve", collapsable=True,
+                         marginHeight=6, marginWidth=6, parent=parent)
+        col = cmds.columnLayout(adjustableColumn=True, rowSpacing=4)
+
+        cmds.text(
+            label=("既存 curve が無いときのショートカット。\n"
+                   "Draw Curve は Maya の CV Curve Tool を起動し\n"
+                   "ビューポートで頂点を打ってから Enter で確定。\n"
+                   "Create Straight は指定した長さ・軸・CV 数で\n"
+                   "直線 NURBS カーブを 1 本作って選択します。"),
+            align="left", parent=col, font="smallObliqueLabelFont",
+        )
+
+        self.curve_length = cmds.floatFieldGrp(
+            label="Length",
+            numberOfFields=1,
+            value1=6.0,
+            columnAlign=(1, "left"),
+            columnWidth2=(90, 60),
+            parent=col,
+        )
+        self.curve_cv_count = cmds.intFieldGrp(
+            label="CV Count",
+            numberOfFields=1,
+            value1=6,
+            columnAlign=(1, "left"),
+            columnWidth2=(90, 60),
+            parent=col,
+        )
+
+        cmds.text(label="Direction", align="left", parent=col)
+        self.curve_axis_menu = cmds.optionMenu(parent=col)
+        for axis in ("-Y", "+Y", "+X", "-X", "+Z", "-Z"):
+            cmds.menuItem(label=axis)
+
+        row = cmds.rowLayout(
+            numberOfColumns=2, adjustableColumn=1,
+            columnAttach=[(1, "both", 2), (2, "both", 2)],
+            columnWidth2=(160, 160), parent=col,
+        )
+        cmds.button(
+            label="Draw Curve (CV Tool)",
+            annotation=("Activate Maya's CV Curve Tool. Click in the "
+                        "viewport to place CVs, press Enter to finish."),
+            command=self._on_start_curve_tool, parent=row,
+        )
+        cmds.button(
+            label="Create Straight Curve",
+            annotation=("Create a straight NURBS curve using the "
+                        "Length/CV Count/Direction above and select it."),
+            command=self._on_create_default_curve, parent=row,
+        )
+        cmds.setParent("..")
+
+    def _on_start_curve_tool(self, *_):
+        hair.start_curve_tool()
+
+    def _on_create_default_curve(self, *_):
+        length = cmds.floatFieldGrp(
+            self.curve_length, query=True, value1=True)
+        cv_count = cmds.intFieldGrp(
+            self.curve_cv_count, query=True, value1=True)
+        axis = cmds.optionMenu(
+            self.curve_axis_menu, query=True, value=True)
+        hair.create_default_curve(
+            length=length, cv_count=cv_count, axis=axis)
 
     # -----------------------------------------------------------------
     # Create Hair panel

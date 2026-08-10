@@ -20,11 +20,107 @@ from typing import List, Optional
 
 try:
     import maya.cmds as cmds
+    import maya.mel as mel
 except ImportError:  # pragma: no cover
     cmds = None
+    mel = None
 
 from . import constants as C
 from . import sweep_utils as su
+
+
+# ---------------------------------------------------------------------------
+# Curve creation shortcuts (skip the "have a curve first" precondition)
+# ---------------------------------------------------------------------------
+
+def start_curve_tool() -> None:
+    """Activate Maya's CV Curve Tool for interactive drawing.
+
+    The user then clicks in the viewport to place CVs and presses Enter
+    to finish. The resulting curve is left selected so the next
+    "Create Hair from Selected Curves" click picks it up.
+    """
+    if cmds is None:
+        raise RuntimeError(
+            "start_curve_tool() must be called inside Maya.")
+    if mel is not None:
+        try:
+            mel.eval("CurveCVTool;")
+            return
+        except Exception:
+            pass
+    # Fallback: activate the context by name directly.
+    try:
+        cmds.setToolTo("curveCVCtx")
+    except Exception as exc:
+        cmds.warning(
+            "[maya_hair_tool] could not start CV Curve Tool: {0}. "
+            "Open Create > Curve Tools > CV Curve Tool manually.".format(
+                exc))
+
+
+def create_default_curve(
+    length: float = 6.0,
+    cv_count: int = 6,
+    axis: str = "-Y",
+    name: str = "hair_curve",
+) -> str:
+    """Create a straight NURBS curve and leave it selected.
+
+    Handy when the user just wants to try the tool without drawing a
+    curve first. Six degree-3 CVs give enough control to reshape into
+    a hair silhouette by dragging a couple of mid CVs. Direction
+    defaults to ``-Y`` so the strand hangs down from the origin like
+    hair off a head, but ``+Y``/``+X``/``-X``/``+Z``/``-Z`` are all
+    accepted for setups where a different axis is more convenient.
+
+    The returned string is the newly-created curve's transform name;
+    caller can use it directly with :func:`create_hair_from_selected_curves`
+    (the selection is set here) or query the CVs afterwards.
+    """
+    if cmds is None:
+        raise RuntimeError(
+            "create_default_curve() must be called inside Maya.")
+
+    # NURBS degree 3 needs at least 4 CVs; clamp silently instead of
+    # raising so a slightly-too-small slider value still produces
+    # something usable.
+    if cv_count < 4:
+        cv_count = 4
+    if length <= 0:
+        length = 6.0
+
+    axis_map = {
+        "+X": (1.0, 0.0, 0.0),
+        "-X": (-1.0, 0.0, 0.0),
+        "+Y": (0.0, 1.0, 0.0),
+        "-Y": (0.0, -1.0, 0.0),
+        "+Z": (0.0, 0.0, 1.0),
+        "-Z": (0.0, 0.0, -1.0),
+    }
+    direction = axis_map.get(axis, axis_map["-Y"])
+    step = length / (cv_count - 1)
+    points = [
+        (direction[0] * i * step,
+         direction[1] * i * step,
+         direction[2] * i * step)
+        for i in range(cv_count)
+    ]
+
+    # Pick a unique name so a second click doesn't collide.
+    base = name
+    candidate = base
+    i = 1
+    while cmds.objExists(candidate):
+        i += 1
+        candidate = "{0}_{1:02d}".format(base, i)
+
+    curve = cmds.curve(degree=3, point=points, name=candidate)
+    try:
+        cmds.select(curve, replace=True)
+    except Exception:
+        pass
+    return curve
 
 
 # ---------------------------------------------------------------------------
