@@ -34,7 +34,23 @@ _PACKAGE = "maya_hair_tool"
 # keeping this name in sync with that convention lets the installer
 # tear down the tool window before overwriting the files on disk.
 WINDOW_NAME = _PACKAGE + "Win"
-WINDOW_TITLE = "Anime Hair Builder"
+WINDOW_TITLE = "アニメヘアビルダー"
+
+
+# Profile presets are stored in ``constants.py`` under English keys
+# (Round / Oval / …). The UI shows Japanese labels but has to hand the
+# original key back to ``hair.set_profile`` — that's what this map is
+# for. Order in the list drives the option-menu order.
+_PROFILE_DISPLAY = [
+    ("円 (Round)", C.PROFILE_ROUND),
+    ("楕円 (Oval)", C.PROFILE_OVAL),
+    ("平 (Flat)", C.PROFILE_FLAT),
+    ("尖 (Sharp)", C.PROFILE_SHARP),
+    ("ダイヤ (Diamond)", C.PROFILE_DIAMOND),
+    ("涙形 (TearDrop)", C.PROFILE_TEAR),
+    ("カスタム (Custom)", C.PROFILE_CUSTOM),
+]
+_PROFILE_LABEL_TO_KEY = {label: key for label, key in _PROFILE_DISPLAY}
 
 # ─── CUSTOMIZE (must match install.py) ────────────────────────────────────
 _GITHUB_OWNER = "ogshaw03"
@@ -119,21 +135,21 @@ class HairBuilderUI(object):
     # Curve panel — shortcuts for when the user has no curve yet
     # -----------------------------------------------------------------
     def _build_curve_panel(self, parent):
-        cmds.frameLayout(label="Curve", collapsable=True,
+        cmds.frameLayout(label="カーブ", collapsable=True,
                          marginHeight=6, marginWidth=6, parent=parent)
         col = cmds.columnLayout(adjustableColumn=True, rowSpacing=4)
 
         cmds.text(
-            label=("既存 curve が無いときのショートカット。\n"
-                   "Draw Curve は Maya の CV Curve Tool を起動し\n"
-                   "ビューポートで頂点を打ってから Enter で確定。\n"
-                   "Create Straight は指定した長さ・軸・CV 数で\n"
+            label=("既存カーブが無いときのショートカット。\n"
+                   "「カーブを描く」は Maya の CV Curve Tool を起動し、\n"
+                   "ビューポートで頂点を打ってから Enter で確定します。\n"
+                   "「直線カーブを作成」は指定した長さ・方向・CV 数で\n"
                    "直線 NURBS カーブを 1 本作って選択します。"),
             align="left", parent=col, font="smallObliqueLabelFont",
         )
 
         self.curve_length = cmds.floatFieldGrp(
-            label="Length",
+            label="長さ",
             numberOfFields=1,
             value1=6.0,
             columnAlign=(1, "left"),
@@ -141,7 +157,7 @@ class HairBuilderUI(object):
             parent=col,
         )
         self.curve_cv_count = cmds.intFieldGrp(
-            label="CV Count",
+            label="CV 数",
             numberOfFields=1,
             value1=6,
             columnAlign=(1, "left"),
@@ -149,7 +165,7 @@ class HairBuilderUI(object):
             parent=col,
         )
 
-        cmds.text(label="Direction", align="left", parent=col)
+        cmds.text(label="方向", align="left", parent=col)
         self.curve_axis_menu = cmds.optionMenu(parent=col)
         for axis in ("-Y", "+Y", "+X", "-X", "+Z", "-Z"):
             cmds.menuItem(label=axis)
@@ -160,15 +176,15 @@ class HairBuilderUI(object):
             columnWidth2=(160, 160), parent=col,
         )
         cmds.button(
-            label="Draw Curve (CV Tool)",
-            annotation=("Activate Maya's CV Curve Tool. Click in the "
-                        "viewport to place CVs, press Enter to finish."),
+            label="カーブを描く (CV Tool)",
+            annotation=("Maya の CV Curve Tool を起動します。"
+                        "ビューポートで頂点を打ち、Enter で確定してください。"),
             command=self._on_start_curve_tool, parent=row,
         )
         cmds.button(
-            label="Create Straight Curve",
-            annotation=("Create a straight NURBS curve using the "
-                        "Length/CV Count/Direction above and select it."),
+            label="直線カーブを作成",
+            annotation=("上のパラメータで直線 NURBS カーブを作成し、"
+                        "選択状態にします。"),
             command=self._on_create_default_curve, parent=row,
         )
         cmds.setParent("..")
@@ -190,38 +206,72 @@ class HairBuilderUI(object):
     # Create Hair panel
     # -----------------------------------------------------------------
     def _build_create_panel(self, parent):
-        cmds.frameLayout(label="Create Hair", collapsable=False,
+        cmds.frameLayout(label="毛束を作成", collapsable=False,
                          marginHeight=6, marginWidth=6, parent=parent)
         col = cmds.columnLayout(adjustableColumn=True, rowSpacing=4)
 
-        cmds.text(label="Profile", align="left", parent=col)
-        self.profile_menu = cmds.optionMenu(parent=col)
-        for name in C.PROFILE_TYPES:
-            cmds.menuItem(label=name)
+        cmds.text(
+            label=("毛束 (カーブ / メッシュ / sweep) を選択中は\n"
+                   "スライダーの調整がリアルタイムで反映されます。\n"
+                   "何も選択していない場合は次回「毛束を生成」時の\n"
+                   "初期値として使われます。"),
+            align="left", parent=col, font="smallObliqueLabelFont",
+        )
 
-        self.thickness = _slider(col, "Thickness", C.DEFAULT_THICKNESS,
-                                 0.01, 5.0)
-        self.width = _slider(col, "Width", C.DEFAULT_WIDTH, 0.01, 5.0)
-        self.height = _slider(col, "Height", C.DEFAULT_HEIGHT, 0.01, 5.0)
-        self.root = _slider(col, "Root Scale", C.DEFAULT_ROOT_SCALE,
-                            0.0, 3.0)
-        self.middle = _slider(col, "Middle Scale", C.DEFAULT_MIDDLE_SCALE,
-                              0.0, 3.0)
-        self.tip = _slider(col, "Tip Scale", C.DEFAULT_TIP_SCALE, 0.0, 3.0)
-        self.twist = _slider(col, "Twist", C.DEFAULT_TWIST, -720.0, 720.0)
-        self.rotation = _slider(col, "Rotation", C.DEFAULT_ROTATION,
-                                -360.0, 360.0)
-        self.subdiv_axis = _int_slider(col, "Subdiv (Axis)",
-                                       C.DEFAULT_SUBDIVISIONS_AXIS, 3, 32)
-        self.subdiv_length = _int_slider(col, "Subdiv (Length)",
-                                         C.DEFAULT_SUBDIVISIONS_LENGTH,
-                                         1, 64)
+        cmds.text(label="プロファイル", align="left", parent=col)
+        self.profile_menu = cmds.optionMenu(
+            parent=col, changeCommand=self._cb_profile_change)
+        for display, _key in _PROFILE_DISPLAY:
+            cmds.menuItem(label=display)
 
-        cmds.button(label="Create Hair from Selected Curves",
+        self.thickness = _slider(
+            col, "太さ (均一)", C.DEFAULT_THICKNESS, 0.01, 5.0,
+            drag_cb=self._cb_thickness_drag,
+            change_cb=self._cb_thickness_change)
+        self.width = _slider(
+            col, "幅 (X)", C.DEFAULT_WIDTH, 0.01, 5.0,
+            drag_cb=self._cb_width_drag,
+            change_cb=self._cb_width_change)
+        self.height = _slider(
+            col, "高さ (Y)", C.DEFAULT_HEIGHT, 0.01, 5.0,
+            drag_cb=self._cb_height_drag,
+            change_cb=self._cb_height_change)
+        self.root = _slider(
+            col, "根本スケール", C.DEFAULT_ROOT_SCALE, 0.0, 3.0,
+            drag_cb=self._cb_root_drag,
+            change_cb=self._cb_root_change)
+        self.middle = _slider(
+            col, "中間スケール", C.DEFAULT_MIDDLE_SCALE, 0.0, 3.0,
+            drag_cb=self._cb_middle_drag,
+            change_cb=self._cb_middle_change)
+        self.tip = _slider(
+            col, "先端スケール", C.DEFAULT_TIP_SCALE, 0.0, 3.0,
+            drag_cb=self._cb_tip_drag,
+            change_cb=self._cb_tip_change)
+        self.twist = _slider(
+            col, "ねじれ", C.DEFAULT_TWIST, -720.0, 720.0,
+            drag_cb=self._cb_twist_drag,
+            change_cb=self._cb_twist_change)
+        self.rotation = _slider(
+            col, "回転", C.DEFAULT_ROTATION, -360.0, 360.0,
+            drag_cb=self._cb_rotation_drag,
+            change_cb=self._cb_rotation_change)
+        self.subdiv_axis = _int_slider(
+            col, "分割数 (軸)", C.DEFAULT_SUBDIVISIONS_AXIS, 3, 32,
+            drag_cb=self._cb_subdiv_axis_drag,
+            change_cb=self._cb_subdiv_axis_change)
+        self.subdiv_length = _int_slider(
+            col, "分割数 (長さ)", C.DEFAULT_SUBDIVISIONS_LENGTH, 1, 64,
+            drag_cb=self._cb_subdiv_length_drag,
+            change_cb=self._cb_subdiv_length_change)
+
+        cmds.button(label="選択カーブから毛束を生成",
                     height=32, command=self._on_create, parent=col)
 
     def _on_create(self, *_):
-        profile = cmds.optionMenu(self.profile_menu, query=True, value=True)
+        label = cmds.optionMenu(
+            self.profile_menu, query=True, value=True)
+        profile = _PROFILE_LABEL_TO_KEY.get(label, C.PROFILE_ROUND)
         hair.create_hair_from_selected_curves(
             profile=profile,
             thickness=_read_float(self.thickness),
@@ -237,16 +287,203 @@ class HairBuilderUI(object):
         )
 
     # -----------------------------------------------------------------
+    # Live-edit callbacks (Create panel sliders → selected strands)
+    #
+    # Undo policy:
+    #   * ``dragCommand`` fires many times per second while the user
+    #     drags the slider. We disable undo recording for the duration
+    #     of each setAttr so the stack doesn't get flooded with dozens
+    #     of intermediate values.
+    #   * ``changeCommand`` fires once when the drag ends and when the
+    #     numeric field is edited. We wrap that final write in a single
+    #     ``undoInfo`` chunk so Ctrl+Z rolls back the whole slider
+    #     interaction as one step.
+    # -----------------------------------------------------------------
+    def _live_apply(self, setter, record_undo):
+        creators = su.sweep_creators_from_selection()
+        if not creators:
+            return
+        if record_undo:
+            cmds.undoInfo(openChunk=True, chunkName="HairLiveEdit")
+            try:
+                for c in creators:
+                    try:
+                        setter(c)
+                    except Exception as exc:
+                        cmds.warning(
+                            "[maya_hair_tool] live edit on {0} failed: "
+                            "{1}".format(c, exc))
+            finally:
+                cmds.undoInfo(closeChunk=True)
+        else:
+            prev = cmds.undoInfo(query=True, state=True)
+            cmds.undoInfo(stateWithoutFlush=False)
+            try:
+                for c in creators:
+                    try:
+                        setter(c)
+                    except Exception:
+                        # Silently skip during drag — errors will
+                        # surface via the changeCommand path when the
+                        # drag ends and it retries with undo recording.
+                        pass
+            finally:
+                cmds.undoInfo(stateWithoutFlush=prev)
+
+    def _set_uniform_scale(self, value):
+        def setter(c):
+            cmds.setAttr(c + ".scaleProfileX", float(value))
+            cmds.setAttr(c + ".scaleProfileY", float(value))
+        return setter
+
+    def _set_attr(self, attr, value, cast=float):
+        def setter(c):
+            cmds.setAttr(c + "." + attr, cast(value))
+        return setter
+
+    def _set_taper(self, root=None, middle=None, tip=None):
+        def setter(c):
+            existing = hair.read_taper_values(c)
+            r = existing[0] if root is None else float(root)
+            m = existing[1] if middle is None else float(middle)
+            t = existing[2] if tip is None else float(tip)
+            hair.set_taper_profile(
+                c, root_scale=r, middle_scale=m, tip_scale=t)
+        return setter
+
+    # --- Profile ---
+    def _cb_profile_change(self, *_):
+        label = cmds.optionMenu(
+            self.profile_menu, query=True, value=True)
+        key = _PROFILE_LABEL_TO_KEY.get(label, C.PROFILE_ROUND)
+        def setter(c):
+            hair.set_profile(c, key)
+        self._live_apply(setter, record_undo=True)
+
+    # --- Thickness (uniform X = Y) ---
+    def _cb_thickness_drag(self, *_):
+        self._live_apply(
+            self._set_uniform_scale(_read_float(self.thickness)),
+            record_undo=False)
+
+    def _cb_thickness_change(self, *_):
+        self._live_apply(
+            self._set_uniform_scale(_read_float(self.thickness)),
+            record_undo=True)
+
+    # --- Width (X only) ---
+    def _cb_width_drag(self, *_):
+        self._live_apply(
+            self._set_attr("scaleProfileX", _read_float(self.width)),
+            record_undo=False)
+
+    def _cb_width_change(self, *_):
+        self._live_apply(
+            self._set_attr("scaleProfileX", _read_float(self.width)),
+            record_undo=True)
+
+    # --- Height (Y only) ---
+    def _cb_height_drag(self, *_):
+        self._live_apply(
+            self._set_attr("scaleProfileY", _read_float(self.height)),
+            record_undo=False)
+
+    def _cb_height_change(self, *_):
+        self._live_apply(
+            self._set_attr("scaleProfileY", _read_float(self.height)),
+            record_undo=True)
+
+    # --- Root / Middle / Tip taper ---
+    def _cb_root_drag(self, *_):
+        self._live_apply(
+            self._set_taper(root=_read_float(self.root)),
+            record_undo=False)
+
+    def _cb_root_change(self, *_):
+        self._live_apply(
+            self._set_taper(root=_read_float(self.root)),
+            record_undo=True)
+
+    def _cb_middle_drag(self, *_):
+        self._live_apply(
+            self._set_taper(middle=_read_float(self.middle)),
+            record_undo=False)
+
+    def _cb_middle_change(self, *_):
+        self._live_apply(
+            self._set_taper(middle=_read_float(self.middle)),
+            record_undo=True)
+
+    def _cb_tip_drag(self, *_):
+        self._live_apply(
+            self._set_taper(tip=_read_float(self.tip)),
+            record_undo=False)
+
+    def _cb_tip_change(self, *_):
+        self._live_apply(
+            self._set_taper(tip=_read_float(self.tip)),
+            record_undo=True)
+
+    # --- Twist ---
+    def _cb_twist_drag(self, *_):
+        self._live_apply(
+            self._set_attr("twistAngle", _read_float(self.twist)),
+            record_undo=False)
+
+    def _cb_twist_change(self, *_):
+        self._live_apply(
+            self._set_attr("twistAngle", _read_float(self.twist)),
+            record_undo=True)
+
+    # --- Rotation ---
+    def _cb_rotation_drag(self, *_):
+        self._live_apply(
+            self._set_attr("rotateProfile", _read_float(self.rotation)),
+            record_undo=False)
+
+    def _cb_rotation_change(self, *_):
+        self._live_apply(
+            self._set_attr("rotateProfile", _read_float(self.rotation)),
+            record_undo=True)
+
+    # --- Subdivision (int) ---
+    def _cb_subdiv_axis_drag(self, *_):
+        self._live_apply(
+            self._set_attr(
+                "interpolationSteps", _read_int(self.subdiv_axis), cast=int),
+            record_undo=False)
+
+    def _cb_subdiv_axis_change(self, *_):
+        self._live_apply(
+            self._set_attr(
+                "interpolationSteps", _read_int(self.subdiv_axis), cast=int),
+            record_undo=True)
+
+    def _cb_subdiv_length_drag(self, *_):
+        self._live_apply(
+            self._set_attr(
+                "interpolationPrecision", _read_int(self.subdiv_length),
+                cast=int),
+            record_undo=False)
+
+    def _cb_subdiv_length_change(self, *_):
+        self._live_apply(
+            self._set_attr(
+                "interpolationPrecision", _read_int(self.subdiv_length),
+                cast=int),
+            record_undo=True)
+
+    # -----------------------------------------------------------------
     # Duplicate panel  (Phase 2)
     # -----------------------------------------------------------------
     def _build_duplicate_panel(self, parent):
-        cmds.frameLayout(label="Duplicate Hair", collapsable=False,
+        cmds.frameLayout(label="毛束を複製", collapsable=False,
                          marginHeight=6, marginWidth=6, parent=parent)
         col = cmds.columnLayout(adjustableColumn=True, rowSpacing=4)
 
-        self.dup_count = _int_slider(col, "Count", 1, 1, 20)
+        self.dup_count = _int_slider(col, "個数", 1, 1, 20)
         self.dup_offset = cmds.floatFieldGrp(
-            label="Offset (X Y Z)",
+            label="オフセット (X Y Z)",
             numberOfFields=3,
             value1=1.0, value2=0.0, value3=0.0,
             columnAlign=(1, "left"),
@@ -254,19 +491,20 @@ class HairBuilderUI(object):
             parent=col,
         )
         cmds.text(
-            label=("Curve / mesh / sweep のいずれかを選択して "
-                   "Duplicate してください。"),
+            label=("カーブ / メッシュ / sweep のいずれかを選択してから "
+                   "複製してください。"),
             align="left", parent=col, font="smallObliqueLabelFont",
         )
-        cmds.button(label="Duplicate Selected Hair",
+        cmds.button(label="選択毛束を複製",
                     height=32, command=self._on_duplicate, parent=col)
 
     def _on_duplicate(self, *_):
         creators = su.sweep_creators_from_selection()
         if not creators:
             cmds.warning(
-                "No hair strands found in selection. "
-                "Select a hair curve, mesh, or sweepMeshCreator.")
+                "選択に毛束が見つかりません。"
+                "カーブ / メッシュ / sweepMeshCreator のいずれかを"
+                "選択してください。")
             return
         count = _read_int(self.dup_count)
         offset = (
@@ -280,43 +518,45 @@ class HairBuilderUI(object):
     # Batch Edit panel
     # -----------------------------------------------------------------
     def _build_batch_panel(self, parent):
-        cmds.frameLayout(label="Batch Edit", collapsable=False,
+        cmds.frameLayout(label="一括編集", collapsable=False,
                          marginHeight=6, marginWidth=6, parent=parent)
         col = cmds.columnLayout(adjustableColumn=True, rowSpacing=4)
 
-        cmds.text(label="Mode", align="left", parent=col)
+        cmds.text(label="モード", align="left", parent=col)
         self.batch_mode = cmds.radioButtonGrp(
             numberOfRadioButtons=2,
-            labelArray2=("Absolute", "Relative"),
+            labelArray2=("絶対値", "相対"),
             select=2,
             parent=col,
         )
 
-        self.batch_thickness = _batch_slider(col, "Thickness", 1.0, 0.01, 5.0)
-        self.batch_width = _batch_slider(col, "Width", 1.0, 0.01, 5.0)
-        self.batch_height = _batch_slider(col, "Height", 1.0, 0.01, 5.0)
-        self.batch_root = _batch_slider(col, "Root Scale", 1.0, 0.0, 3.0)
-        self.batch_middle = _batch_slider(col, "Middle Scale", 1.0, 0.0, 3.0)
-        self.batch_tip = _batch_slider(col, "Tip Scale", 1.0, 0.0, 3.0)
-        self.batch_twist = _batch_slider(col, "Twist", 0.0, -720.0, 720.0)
-        self.batch_subdiv = _batch_int_slider(col, "Subdiv (Axis)", 8, 3, 32)
+        self.batch_thickness = _batch_slider(col, "太さ", 1.0, 0.01, 5.0)
+        self.batch_width = _batch_slider(col, "幅", 1.0, 0.01, 5.0)
+        self.batch_height = _batch_slider(col, "高さ", 1.0, 0.01, 5.0)
+        self.batch_root = _batch_slider(col, "根本スケール", 1.0, 0.0, 3.0)
+        self.batch_middle = _batch_slider(col, "中間スケール", 1.0, 0.0, 3.0)
+        self.batch_tip = _batch_slider(col, "先端スケール", 1.0, 0.0, 3.0)
+        self.batch_twist = _batch_slider(col, "ねじれ", 0.0, -720.0, 720.0)
+        self.batch_subdiv = _batch_int_slider(col, "分割数 (軸)", 8, 3, 32)
 
         cmds.text(
-            label=("Sliders left at 1.0 (or 0.0 for Twist) are treated "
-                   "as \"no change\" — Absolute preserves the current "
-                   "value, Relative is a 1× no-op. Subdiv only applies "
-                   "in Absolute mode."),
+            label=("スライダーが 1.0 (ねじれは 0.0、分割数は既定値の 8) "
+                   "のままの項目は「変更なし」として扱われます。"
+                   "絶対値モードでは既存値を保持、相対モードでは ×1 の "
+                   "no-op になります。ねじれの相対モードは加算です "
+                   "(例: 相対 +45 → 各毛束の現在ねじれに +45°)。"
+                   "分割数は絶対値モードのみ適用されます。"),
             align="left", parent=col, font="smallObliqueLabelFont",
             wordWrap=True,
         )
 
-        cmds.button(label="Apply to Selected",
+        cmds.button(label="選択に適用",
                     height=32, command=self._on_batch_apply, parent=col)
 
     def _on_batch_apply(self, *_):
         creators = batch.creators_from_selection()
         if not creators:
-            cmds.warning("No hair strands found in selection.")
+            cmds.warning("選択に毛束が見つかりません。")
             return
         is_absolute = cmds.radioButtonGrp(
             self.batch_mode, query=True, select=True) == 1
@@ -426,7 +666,7 @@ class HairBuilderUI(object):
         )
         cmds.button(label="GitHub から更新", height=24,
                     command=update_from_github, parent=row)
-        cmds.button(label="Close",
+        cmds.button(label="閉じる",
                     command=lambda *_: cmds.deleteUI(WINDOW_NAME),
                     parent=row)
 
@@ -436,8 +676,9 @@ class HairBuilderUI(object):
 # ---------------------------------------------------------------------------
 
 def _slider(parent, label, value, minv, maxv,
-            field_min=-1e6, field_max=1e6):
-    return cmds.floatSliderGrp(
+            field_min=-1e6, field_max=1e6,
+            drag_cb=None, change_cb=None):
+    kwargs = dict(
         label=label,
         field=True,
         minValue=minv,
@@ -449,11 +690,17 @@ def _slider(parent, label, value, minv, maxv,
         columnWidth3=(90, 60, 120),
         parent=parent,
     )
+    if drag_cb is not None:
+        kwargs["dragCommand"] = drag_cb
+    if change_cb is not None:
+        kwargs["changeCommand"] = change_cb
+    return cmds.floatSliderGrp(**kwargs)
 
 
 def _int_slider(parent, label, value, minv, maxv,
-                field_min=1, field_max=999):
-    return cmds.intSliderGrp(
+                field_min=1, field_max=999,
+                drag_cb=None, change_cb=None):
+    kwargs = dict(
         label=label,
         field=True,
         minValue=minv,
@@ -465,9 +712,15 @@ def _int_slider(parent, label, value, minv, maxv,
         columnWidth3=(90, 60, 120),
         parent=parent,
     )
+    if drag_cb is not None:
+        kwargs["dragCommand"] = drag_cb
+    if change_cb is not None:
+        kwargs["changeCommand"] = change_cb
+    return cmds.intSliderGrp(**kwargs)
 
 
-def _batch_slider(parent, label, value, minv, maxv):
+def _batch_slider(parent, label, value, minv, maxv,
+                  drag_cb=None, change_cb=None):
     """Batch-panel slider with a tight field range.
 
     Numeric-field entry is capped to a sensible domain (roughly the
@@ -483,14 +736,17 @@ def _batch_slider(parent, label, value, minv, maxv):
         parent, label, value, minv, maxv,
         field_min=min(minv, 0.0) - headroom,
         field_max=maxv + headroom,
+        drag_cb=drag_cb, change_cb=change_cb,
     )
 
 
-def _batch_int_slider(parent, label, value, minv, maxv):
+def _batch_int_slider(parent, label, value, minv, maxv,
+                      drag_cb=None, change_cb=None):
     return _int_slider(
         parent, label, value, minv, maxv,
         field_min=minv,
         field_max=maxv,
+        drag_cb=drag_cb, change_cb=change_cb,
     )
 
 
@@ -576,9 +832,9 @@ def _run_update():
     except Exception as exc:
         traceback.print_exc()
         cmds.confirmDialog(
-            title="Update failed",
-            message="Update from GitHub failed:\n{0}\n\n"
-                    "See Script Editor for full traceback.".format(exc),
+            title="更新失敗",
+            message="GitHub からの更新に失敗しました:\n{0}\n\n"
+                    "詳細は Script Editor を確認してください。".format(exc),
             button=["OK"])
         return
 
@@ -603,9 +859,10 @@ def _run_update():
     except Exception as exc:
         traceback.print_exc()
         cmds.confirmDialog(
-            title="Update failed",
-            message=("install.py raised:\n{0}: {1}\n\n"
-                     "See Script Editor for full traceback.".format(
+            title="更新失敗",
+            message=("install.py の実行でエラーが発生しました:\n"
+                     "{0}: {1}\n\n"
+                     "詳細は Script Editor を確認してください。".format(
                          type(exc).__name__, exc)),
             button=["OK"])
         return
@@ -634,11 +891,11 @@ def _reopen_after_update():
     except Exception as exc:
         traceback.print_exc()
         cmds.confirmDialog(
-            title="Reopen failed",
-            message=("Update finished but reopening the tool window "
-                     "failed:\n{0}: {1}\n\n"
-                     "Click the shelf button to reopen manually.".format(
-                         type(exc).__name__, exc)),
+            title="再オープン失敗",
+            message=("更新は完了しましたが、ウィンドウの再表示に"
+                     "失敗しました:\n{0}: {1}\n\n"
+                     "シェルフボタンから手動で再オープンして"
+                     "ください。".format(type(exc).__name__, exc)),
             button=["OK"])
 
 

@@ -335,9 +335,9 @@ _SHELF_UPDATE_CMD = (
     "except Exception as _e:\n"
     "    import traceback; traceback.print_exc()\n"
     "    from maya import cmds as _cmds\n"
-    "    _cmds.confirmDialog(title='Update failed',\n"
-    "        message='Update from GitHub failed:\\n' + str(_e) +\n"
-    "                '\\n\\nSee Script Editor for full traceback.',\n"
+    "    _cmds.confirmDialog(title='更新失敗',\n"
+    "        message='GitHub からの更新に失敗しました:\\n' + str(_e) +\n"
+    "                '\\n\\n詳細は Script Editor を確認してください。',\n"
     "        button=['OK'])\n"
 ).format(pkg=_PACKAGE, owner=_GITHUB_OWNER, repo=_GITHUB_REPO,
          branch=_GITHUB_BRANCH, env_pin=_PACKAGE.upper() + "_PIN_SHA")
@@ -426,11 +426,11 @@ def install():
     try:
         cmds.confirmDialog(
             title=_SHELF_BUTTON_LABEL,
-            message=("Installed to:\n{0}\n\n"
-                     "Version: {1} -> {2}\n\n"
-                     "The '{3}' shelf button has been refreshed. "
-                     "Left-click to launch, right-click for "
-                     "Update-from-GitHub.".format(
+            message=("インストール先:\n{0}\n\n"
+                     "バージョン: {1} → {2}\n\n"
+                     "シェルフの '{3}' ボタンを更新しました。\n"
+                     "左クリックで起動、右クリックで GitHub から"
+                     "更新できます。".format(
                          user_scripts, prev_version, new_version,
                          _SHELF_BUTTON_LABEL)),
             button=["OK"])
@@ -473,9 +473,10 @@ else:
         _tb.print_exc()
         try:
             _cmds.confirmDialog(
-                title=_SHELF_BUTTON_LABEL + " — install failed",
-                message="Install failed:\n{0}\n\nSee Script Editor "
-                        "for full traceback.".format(_bootstrap_exc),
+                title=_SHELF_BUTTON_LABEL + " — インストール失敗",
+                message="インストールに失敗しました:\n{0}\n\n"
+                        "詳細は Script Editor を確認してください。".format(
+                            _bootstrap_exc),
                 button=["OK"])
         except Exception:
             pass
