@@ -1,39 +1,26 @@
 """Shared constants for the Maya Anime Hair Sweep Tool."""
 
-# Profile presets exposed in the UI. The integer value maps to the
-# sweepMeshCreator.profilePolyType enum values in Maya.
-#   0 = Round, 1 = Square, 2 = Ribbon, 3 = Custom
-#
-# The names below are the ones we want to expose to the user; some are
-# implemented as tweaked Round / Square / Custom profiles.
-PROFILE_ROUND = "Round"
-PROFILE_OVAL = "Oval"
-PROFILE_FLAT = "Flat"
-PROFILE_SHARP = "Sharp"
-PROFILE_DIAMOND = "Diamond"
-PROFILE_TEAR = "TearDrop"
+# Profile presets exposed in the UI. Maya 2023's sweepMeshCreator uses
+# a two-level shape enum:
+#   * ``sweepProfileType``  0=Regular Polygon, 1=Rounded Rectangle,
+#                           2=Line, 3=Arc, 4=Wave, 5=Custom
+#   * ``profilePolyType``   0=Convex, 1=Star  (only for Regular Polygon)
+# Our named presets combine those two attrs + scaleProfile* tweaks.
+PROFILE_CIRCLE = "Circle"
+PROFILE_ELLIPSE = "Ellipse"
+PROFILE_RIBBON = "Ribbon"
+PROFILE_STAR = "Star"
+PROFILE_RECTANGLE = "Rectangle"
 PROFILE_CUSTOM = "Custom"
 
 PROFILE_TYPES = [
-    PROFILE_ROUND,
-    PROFILE_OVAL,
-    PROFILE_FLAT,
-    PROFILE_SHARP,
-    PROFILE_DIAMOND,
-    PROFILE_TEAR,
+    PROFILE_CIRCLE,
+    PROFILE_ELLIPSE,
+    PROFILE_RIBBON,
+    PROFILE_STAR,
+    PROFILE_RECTANGLE,
     PROFILE_CUSTOM,
 ]
-
-# Maps our exposed profile name to the sweepMeshCreator.profilePolyType enum.
-PROFILE_POLY_TYPE = {
-    PROFILE_ROUND: 0,
-    PROFILE_OVAL: 0,
-    PROFILE_FLAT: 1,
-    PROFILE_SHARP: 1,
-    PROFILE_DIAMOND: 1,
-    PROFILE_TEAR: 3,
-    PROFILE_CUSTOM: 3,
-}
 
 # Default anime hair authoring values.
 DEFAULT_THICKNESS = 1.0

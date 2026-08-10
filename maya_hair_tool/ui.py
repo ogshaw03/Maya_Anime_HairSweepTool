@@ -37,17 +37,19 @@ WINDOW_NAME = _PACKAGE + "Win"
 WINDOW_TITLE = "アニメヘアビルダー"
 
 
-# Profile presets are stored in ``constants.py`` under English keys
-# (Round / Oval / …). The UI shows Japanese labels but has to hand the
-# original key back to ``hair.set_profile`` — that's what this map is
-# for. Order in the list drives the option-menu order.
+# Profile presets are stored in ``constants.py`` under English keys.
+# The UI shows Japanese-first labels; ``_PROFILE_LABEL_TO_KEY`` maps
+# the selected label back to the key ``hair.set_profile`` accepts.
+# Preset set was reworked for Maya 2023's real two-level shape enum
+# (sweepProfileType + profilePolyType); the previous
+# Round/Oval/Flat/Sharp/Diamond/TearDrop naming was based on a Maya
+# schema that never existed.
 _PROFILE_DISPLAY = [
-    ("円 (Round)", C.PROFILE_ROUND),
-    ("楕円 (Oval)", C.PROFILE_OVAL),
-    ("平 (Flat)", C.PROFILE_FLAT),
-    ("尖 (Sharp)", C.PROFILE_SHARP),
-    ("ダイヤ (Diamond)", C.PROFILE_DIAMOND),
-    ("涙形 (TearDrop)", C.PROFILE_TEAR),
+    ("円 (Circle)", C.PROFILE_CIRCLE),
+    ("楕円 (Ellipse)", C.PROFILE_ELLIPSE),
+    ("リボン (Ribbon)", C.PROFILE_RIBBON),
+    ("星 (Star)", C.PROFILE_STAR),
+    ("長方形 (Rectangle)", C.PROFILE_RECTANGLE),
     ("カスタム (Custom)", C.PROFILE_CUSTOM),
 ]
 _PROFILE_LABEL_TO_KEY = {label: key for label, key in _PROFILE_DISPLAY}
@@ -266,9 +268,18 @@ class HairBuilderUI(object):
             drag_cb=self._cb_subdiv_axis_drag,
             change_cb=self._cb_subdiv_axis_change)
         self.subdiv_length = _int_slider(
-            col, "長さ分割数", C.DEFAULT_SUBDIVISIONS_LENGTH, 1, 64,
+            col, "長さ分割数", C.DEFAULT_SUBDIVISIONS_LENGTH, 1, 128,
             drag_cb=self._cb_subdiv_length_drag,
             change_cb=self._cb_subdiv_length_change)
+
+        cmds.text(
+            label=("長さ分割数は interpolationPrecision (精度値) を"
+                   "書き込みます。既定 12 付近では変化しません — "
+                   "実際にポリゴン数が増えるのは 30 以上 (60 で "
+                   "約 4 倍、100 以上で更に細かく)。"),
+            align="left", parent=col, font="smallObliqueLabelFont",
+            wordWrap=True,
+        )
 
         cmds.button(label="選択カーブから毛束を生成",
                     height=32, command=self._on_create, parent=col)
@@ -592,7 +603,7 @@ class HairBuilderUI(object):
         self.batch_middle = _batch_slider(col, "中間スケール", 1.0, 0.0, 3.0)
         self.batch_tip = _batch_slider(col, "先端スケール", 1.0, 0.0, 3.0)
         self.batch_twist = _batch_slider(col, "ねじれ", 0.0, -720.0, 720.0)
-        self.batch_subdiv = _batch_int_slider(col, "断面分割数", 8, 3, 32)
+        self.batch_subdiv = _batch_int_slider(col, "断面分割数", 8, 3, 64)
 
         cmds.text(
             label=("スライダーが 1.0 (ねじれは 0.0、断面分割数は既定 8) "

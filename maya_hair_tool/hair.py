@@ -316,34 +316,44 @@ def _apply_settings(
 def set_profile(creator: str, profile: str) -> None:
     """Switch the sweep to the requested profile preset.
 
-    Always reset ``scaleProfileY`` and ``rotateProfile`` to identity
-    values (1.0 / 0.0) before applying the preset. Without this reset
-    a previous preset's leftover value (Flat's Y=0.35, Sharp's 45°)
-    would bleed into the newly requested shape — e.g. Flat → Diamond
-    would still be squashed to Y=0.35 because Diamond only sets
-    ``rotateProfile``.
+    Maya 2023's sweepMeshCreator uses a two-level shape enum:
+    ``sweepProfileType`` picks the top-level shape family (Regular
+    Polygon / Rounded Rectangle / Line / Arc / Wave / Custom) and,
+    for Regular Polygon, ``profilePolyType`` picks Convex vs Star.
+
+    We always reset the per-preset knobs (Y scale, rotation, Uniform
+    link) to their identity values before applying the new preset,
+    so a previous preset's tweak (Ellipse's Y=0.5 etc.) doesn't
+    bleed into the new shape.
     """
-    poly_type = C.PROFILE_POLY_TYPE.get(profile, 0)
-    _safe_set(creator, "profilePolyType", poly_type)
-
-    # Reset per-preset knobs to identity so a previous preset does not
-    # bleed into the new shape.
-    _safe_set(creator, "scaleProfileY", 1.0)
+    # Reset per-preset knobs to identity first.
     _safe_set(creator, "rotateProfile", 0.0)
+    _safe_set(creator, "scaleProfileUniform", True)
+    _safe_set(creator, "scaleProfileX", 1.0)
+    _safe_set(creator, "scaleProfileY", 1.0)
 
-    # Adjust the aspect ratio for named preset variants that share a
-    # profilePolyType with something else.
-    if profile == C.PROFILE_OVAL:
-        _safe_set(creator, "scaleProfileY", 0.55)
-    elif profile == C.PROFILE_FLAT:
-        _safe_set(creator, "scaleProfileY", 0.35)
-    elif profile == C.PROFILE_SHARP:
-        _safe_set(creator, "scaleProfileY", 0.6)
-        _safe_set(creator, "rotateProfile", 45.0)
-    elif profile == C.PROFILE_DIAMOND:
-        _safe_set(creator, "rotateProfile", 45.0)
-    # PROFILE_TEAR and PROFILE_CUSTOM keep the identity values set
-    # above; the user is expected to edit the custom profile curve.
+    if profile == C.PROFILE_CIRCLE:
+        _safe_set(creator, "sweepProfileType", 0)     # Regular Polygon
+        _safe_set(creator, "profilePolyType", 0)      # Convex
+        _safe_set(creator, "profilePolySides", 12)
+    elif profile == C.PROFILE_ELLIPSE:
+        _safe_set(creator, "sweepProfileType", 0)     # Regular Polygon
+        _safe_set(creator, "profilePolyType", 0)      # Convex
+        _safe_set(creator, "profilePolySides", 12)
+        # Ellipse needs X ≠ Y, so Uniform must be off.
+        _safe_set(creator, "scaleProfileUniform", False)
+        _safe_set(creator, "scaleProfileY", 0.5)
+    elif profile == C.PROFILE_RIBBON:
+        _safe_set(creator, "sweepProfileType", 2)     # Line
+    elif profile == C.PROFILE_STAR:
+        _safe_set(creator, "sweepProfileType", 0)     # Regular Polygon
+        _safe_set(creator, "profilePolyType", 1)      # Star
+        _safe_set(creator, "profilePolySides", 5)
+    elif profile == C.PROFILE_RECTANGLE:
+        _safe_set(creator, "sweepProfileType", 1)     # Rounded Rectangle
+    elif profile == C.PROFILE_CUSTOM:
+        _safe_set(creator, "sweepProfileType", 5)     # Custom
+        # User then edits the custom profile curve in the AE.
 
 
 def set_taper_profile(
