@@ -39,9 +39,19 @@
 - 基本の Absolute / Relative 一括編集は実装済み
 - Undo チャンク統合 / Group 選択 / 部分未実装
 
-### ⬜ Phase 4 — Preset / Hair Library
-### ⬜ Phase 5 — Hair Group（Front / Side / Back など）
-### ⬜ Phase 6 — Braid Generator など手続き型毛束
+### ✅ Phase 4 — Preset / Hair Library (v0.3.x 系列)
+- 外部 (.ma) + 内部 (`InLibrary` scene group) の 2 系統
+- タブ切替 UI、UUID-keyed サムネ、外部 ⇔ 内部の相互エクスポート
+
+### ✅ Phase 5 — Hair Group（v0.2.13 骨格 + v0.3.13 階層分離）
+- `HairGroup/Geometry_group/<name>` と `HairGroup/Curve_group/<name>` の対称階層
+- ユーザーグループの作成 / 移動 / 削除 / グループ相対乗算モード
+- v0.3.12 以前シーンの自動 migration (`_migrate_legacy_hierarchy`)
+
+### ✅ Phase 6 — Braid Generator (v0.4.0)
+- 3-strand only、スパインカーブから parallel transport frame でサンプリング
+- 各ストランドは通常 hair strand として生成 → `Braid_NN` グループに自動封入
+- UI: Create パネル最上部の折りたたみセクション「三つ編み (Braid)」
 
 ### ✅ 配布インフラ（Phase 別ではなく横断）
 - `install.py` をドラッグ&ドロップで `maya_hair_tool/*` を自動配置
