@@ -209,63 +209,154 @@ def save_hair_to_library(
     return ma_path
 
 
+def _find_model_panel() -> Optional[str]:
+    """Return the active model panel (or the first available one).
+    Playblast needs a model panel to render from; batch mode / no
+    open viewport → None."""
+    if cmds is None:
+        return None
+    try:
+        p = cmds.getPanel(withFocus=True)
+        if p and cmds.getPanel(typeOf=p) == "modelPanel":
+            return p
+    except Exception:
+        pass
+    try:
+        panels = cmds.getPanel(type="modelPanel") or []
+        for p in panels:
+            if cmds.modelPanel(p, exists=True):
+                return p
+    except Exception:
+        pass
+    return None
+
+
 def _snapshot_thumbnail(target_path: str,
                         focus=None, size: int = 128) -> None:
-    """Best-effort ``playblast`` of the current viewport centred on
-    ``focus`` (a list of nodes). Silently returns if playblast is
-    unavailable (batch mode, no viewport, etc.) — the .ma file is
-    still valid, just without a preview."""
+    """Playblast a single frame showing ONLY ``focus`` and save the
+    result to ``target_path`` (must end in ``.png``).
+
+    * Uses ``cmds.isolateSelect`` on the active model panel so the
+      snapshot only shows the requested strand — no other scene
+      geometry, no grid clutter beyond the panel defaults.
+    * Restores the panel's original isolate state + the user's
+      original scene selection in ``finally`` so a failure never
+      leaves the viewport locked to "isolate mode".
+    * Silently returns when there's no model panel (batch mode) —
+      the .ma preset is still valid, just without a preview.
+    """
     if cmds is None:
         return
 
-    prev_sel = None
-    if focus:
+    panel = _find_model_panel()
+    if not panel:
+        return  # No viewport → nothing to snapshot.
+
+    prev_sel = cmds.ls(selection=True, long=True) or []
+    prev_iso_state = None
+    try:
+        prev_iso_state = cmds.isolateSelect(
+            panel, query=True, state=True)
+    except Exception:
+        prev_iso_state = None
+
+    try:
+        # Isolate: turn iso ON, empty its list, add just our focus,
+        # frame it. The three-step sequence (state=1 → addSelected)
+        # is the standard pattern Maya's own AE uses.
+        if focus:
+            try:
+                cmds.select(focus, replace=True)
+            except Exception:
+                pass
         try:
-            prev_sel = cmds.ls(selection=True, long=True) or []
-            cmds.select(focus, replace=True)
-            cmds.viewFit(all=False)
+            cmds.isolateSelect(panel, state=1)
+            cmds.isolateSelect(panel, removeSelected=True)
+            if focus:
+                cmds.select(focus, replace=True)
+                cmds.isolateSelect(panel, addSelected=True)
+            cmds.viewFit(panel, all=False)
+        except Exception as exc:
+            cmds.warning(
+                "[maya_hair_tool] isolate 設定失敗 (サムネ生成"
+                "続行): {0}".format(exc))
+
+        # ``filename`` for playblast is a base — Maya appends
+        # ``.<frame>.<ext>`` where <ext> depends on ``compression``.
+        # We give it a distinctive tmp base so we can find the
+        # resulting file next to target_path.
+        target_dir = os.path.dirname(target_path) or "."
+        base_no_ext = os.path.splitext(target_path)[0]
+        tmp_base = base_no_ext + "__thumb_tmp"
+
+        try:
+            cur_frame = cmds.currentTime(query=True)
         except Exception:
-            prev_sel = None
+            cur_frame = 1
 
-    try:
-        cur_frame = cmds.currentTime(query=True)
-    except Exception:
-        cur_frame = 1
+        # Snapshot files that already match the pattern so we don't
+        # trip over stale leftovers on failure.
+        tmp_basename = os.path.basename(tmp_base)
+        try:
+            before = set(f for f in os.listdir(target_dir)
+                         if f.startswith(tmp_basename))
+        except Exception:
+            before = set()
 
-    tmp_prefix = target_path + "_tmp"
-    result = None
-    try:
-        result = cmds.playblast(
-            format="image",
-            filename=tmp_prefix,
-            widthHeight=(size, size),
-            showOrnaments=False,
-            percent=100,
-            frame=[cur_frame],
-            viewer=False,
-            forceOverwrite=True,
-            compression="png",
-            offScreen=True,
-        )
-    except Exception:
-        pass
+        try:
+            cmds.playblast(
+                format="image",
+                filename=tmp_base.replace("\\", "/"),
+                widthHeight=[size, size],
+                percent=100,
+                frame=[cur_frame],
+                viewer=False,
+                forceOverwrite=True,
+                compression="png",
+                showOrnaments=False,
+                framePadding=1,
+            )
+        except Exception as exc:
+            cmds.warning(
+                "[maya_hair_tool] playblast 失敗: {0}".format(exc))
+            return
 
-    # Locate the file playblast actually wrote (Maya appends
-    # frame number + extension) and rename it to target_path.
-    parent = os.path.dirname(target_path) or "."
-    prefix = os.path.basename(tmp_prefix)
-    for f in list(os.listdir(parent)):
-        if f.startswith(prefix) and f.lower().endswith(".png"):
-            src = os.path.join(parent, f)
+        # Rename Maya's output (whatever extension it wrote) to
+        # target_path so the icon-grid finds it.
+        try:
+            after = set(f for f in os.listdir(target_dir)
+                        if f.startswith(tmp_basename))
+        except Exception:
+            after = set()
+        produced = sorted(after - before)
+        if not produced:
+            # Fall back to anything matching the prefix.
+            produced = sorted(after)
+        for f in produced:
+            src = os.path.join(target_dir, f)
             try:
                 if os.path.isfile(target_path):
                     os.remove(target_path)
                 os.rename(src, target_path)
                 break
             except Exception:
-                pass
+                continue
 
-    if prev_sel is not None:
+        # Clean up any stray tmp files.
+        for f in list(os.listdir(target_dir)):
+            if f.startswith(tmp_basename):
+                try:
+                    os.remove(os.path.join(target_dir, f))
+                except Exception:
+                    pass
+    finally:
+        # Restore isolate + selection so the user's viewport looks
+        # untouched after the save.
+        try:
+            if prev_iso_state is not None:
+                cmds.isolateSelect(panel, state=int(prev_iso_state))
+        except Exception:
+            pass
         try:
             if prev_sel:
                 cmds.select(prev_sel, replace=True)
@@ -273,6 +364,26 @@ def _snapshot_thumbnail(target_path: str,
                 cmds.select(clear=True)
         except Exception:
             pass
+
+
+def regenerate_thumbnail(name: str, size: int = 128) -> bool:
+    """Re-generate the .png thumbnail for an already-saved external
+    preset. Loads the .ma temporarily is out of scope for MVP —
+    this variant just plays back the current scene's version of a
+    strand if one exists, otherwise the thumbnail stays blank."""
+    root = library_root()
+    safe = _sanitize_name(name)
+    ma_path = os.path.join(root, safe + ".ma")
+    png_path = os.path.join(root, safe + ".png")
+    if not os.path.isfile(ma_path):
+        return False
+    # For now regenerate only from the current selection — user is
+    # expected to select the strand they want a fresh thumbnail
+    # for and then invoke this. Full "load .ma into temp, snapshot,
+    # discard" round-trip can come later.
+    _snapshot_thumbnail(png_path, focus=cmds.ls(selection=True) or None,
+                        size=size)
+    return os.path.isfile(png_path)
 
 
 # --------------------------------------------------------------------------- #

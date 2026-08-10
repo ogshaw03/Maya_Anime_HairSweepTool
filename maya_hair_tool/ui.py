@@ -2014,6 +2014,9 @@ class HairBuilderUI(object):
             def _cb_copy_to_internal(_ma=ma_path, *_):
                 self._copy_external_to_internal(_ma)
 
+            def _cb_regen(_name=name, *_):
+                self._regenerate_external_thumbnail(_name)
+
             # Right-click popup for delete / copy-to-internal.
             popup = cmds.popupMenu(parent=btn, button=3)
             cmds.menuItem(
@@ -2022,6 +2025,9 @@ class HairBuilderUI(object):
             cmds.menuItem(
                 label="内部ライブラリにコピー",
                 command=_cb_copy_to_internal, parent=popup)
+            cmds.menuItem(
+                label="サムネイル再生成 (現在の選択毛束から)",
+                command=_cb_regen, parent=popup)
             cmds.menuItem(divider=True, parent=popup)
             cmds.menuItem(
                 label="外部ライブラリから削除",
@@ -2231,6 +2237,29 @@ class HairBuilderUI(object):
             statusMessage="内部ライブラリにコピーしました",
             fade=True, position="topCenter")
         self._refresh_internal_library_grid()
+
+    def _regenerate_external_thumbnail(self, name):
+        """右クリック → サムネイル再生成. Uses the currently-selected
+        strand as the subject (user must have one selected — for
+        an existing preset this typically means picking that preset's
+        strand from the hair list or scene first)."""
+        creators = su.sweep_creators_from_selection()
+        if not creators:
+            cmds.warning(
+                "サムネイル生成には毛束を選択してください。")
+            return
+        try:
+            ok = library.regenerate_thumbnail(name)
+        except Exception as exc:
+            cmds.warning(str(exc))
+            return
+        if ok:
+            cmds.inViewMessage(
+                statusMessage="サムネイル再生成しました",
+                fade=True, position="topCenter")
+        else:
+            cmds.warning("サムネイル生成に失敗しました。")
+        self._refresh_library_grid()
 
     def _delete_from_library(self, name):
         # Guard the destructive op behind a confirmation.
