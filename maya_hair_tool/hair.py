@@ -264,27 +264,14 @@ def _apply_settings(
     if profile is not None:
         set_profile(creator, profile)
 
-    # Read the baseline scale that ``set_profile`` just applied. For
-    # Oval/Flat/Sharp presets ``scaleProfileY`` may be 0.55/0.35/0.6
-    # instead of 1.0; using it as a multiplier for ``thickness``
-    # preserves the preset silhouette when the user cranks Thickness
-    # up (e.g. Oval + Thickness 2.0 → Y = 0.55 × 2.0 = 1.1, still
-    # oval, just bigger).
-    baseline_x = 1.0
-    baseline_y = 1.0
-    if cmds is not None:
-        try:
-            baseline_x = float(cmds.getAttr(creator + ".scaleProfileX"))
-            baseline_y = float(cmds.getAttr(creator + ".scaleProfileY"))
-        except Exception:
-            pass
-
-    # Thickness = uniform scale shorthand. Non-identity wins over
-    # width/height so a lone Thickness slider is not silently
-    # overridden by width/height defaults.
+    # Thickness = uniform scale shorthand. ``scaleProfileUniform`` is
+    # sweepMeshCreator's own uniform multiplier applied on top of X/Y,
+    # so a preset that set X=1.0 / Y=0.55 (Oval) stays elliptic when
+    # Thickness is turned up — no baseline juggling needed on our end.
+    # Non-identity wins over width/height so a lone Thickness slider
+    # is not silently overridden by width/height defaults.
     if thickness is not None and float(thickness) != 1.0:
-        _safe_set(creator, "scaleProfileX", float(thickness) * baseline_x)
-        _safe_set(creator, "scaleProfileY", float(thickness) * baseline_y)
+        _safe_set(creator, "scaleProfileUniform", float(thickness))
     else:
         if width is not None and float(width) != 1.0:
             _safe_set(creator, "scaleProfileX", float(width))
@@ -292,7 +279,7 @@ def _apply_settings(
             _safe_set(creator, "scaleProfileY", float(height))
 
     if twist is not None and float(twist) != 0.0:
-        _safe_set(creator, "twistAngle", float(twist))
+        _safe_set(creator, "twist", float(twist))
     # rotation only overrides when the user explicitly moved it —
     # otherwise Sharp/Diamond presets' 45° would be reset to 0.
     if rotation is not None and float(rotation) != 0.0:
@@ -360,8 +347,14 @@ def set_taper_profile(
     ``None`` for any of the three scales means "preserve whatever value
     is currently at that position". This lets Batch Edit change only
     Root/Tip without resetting Middle to a default.
+
+    NB: the Maya attribute this authors is ``taperCurve`` (with
+    sub-attributes ``taperCurve_Position`` / ``_FloatValue`` /
+    ``_Interp``), NOT ``scaleProfile`` — a naming mismatch in earlier
+    versions meant this whole function silently no-op'd because
+    ``attributeQuery('scaleProfile', ...)`` returned False.
     """
-    if not cmds.attributeQuery("scaleProfile", node=creator, exists=True):
+    if not cmds.attributeQuery("taperCurve", node=creator, exists=True):
         return
 
     # If any of the three is unspecified, read the existing ramp so we
@@ -375,7 +368,7 @@ def set_taper_profile(
         if tip_scale is None:
             tip_scale = existing[2]
 
-    ramp_attr = creator + ".scaleProfile"
+    ramp_attr = creator + ".taperCurve"
     # Clear existing entries first.
     indices = cmds.getAttr(ramp_attr, multiIndices=True) or []
     for idx in indices:
@@ -391,13 +384,13 @@ def set_taper_profile(
         (1.0, float(tip_scale), 2),     # tip
     ]
     for i, (pos, val, interp) in enumerate(entries):
-        cmds.setAttr("{0}[{1}].scaleProfile_Position".format(ramp_attr, i), pos)
-        cmds.setAttr("{0}[{1}].scaleProfile_FloatValue".format(ramp_attr, i), val)
-        cmds.setAttr("{0}[{1}].scaleProfile_Interp".format(ramp_attr, i), interp)
+        cmds.setAttr("{0}[{1}].taperCurve_Position".format(ramp_attr, i), pos)
+        cmds.setAttr("{0}[{1}].taperCurve_FloatValue".format(ramp_attr, i), val)
+        cmds.setAttr("{0}[{1}].taperCurve_Interp".format(ramp_attr, i), interp)
 
 
 def read_taper_values(creator: str) -> tuple:
-    """Return ``(root, middle, tip)`` from the current ``scaleProfile`` ramp.
+    """Return ``(root, middle, tip)`` from the current ``taperCurve`` ramp.
 
     Reads whatever entries are currently on the sweepMeshCreator and
     returns the values at (or closest to) positions 0.0, 0.5, 1.0.
@@ -411,10 +404,10 @@ def read_taper_values(creator: str) -> tuple:
         C.DEFAULT_MIDDLE_SCALE,
         C.DEFAULT_TIP_SCALE,
     )
-    if not cmds.attributeQuery("scaleProfile", node=creator, exists=True):
+    if not cmds.attributeQuery("taperCurve", node=creator, exists=True):
         return defaults
 
-    ramp_attr = creator + ".scaleProfile"
+    ramp_attr = creator + ".taperCurve"
     indices = cmds.getAttr(ramp_attr, multiIndices=True) or []
     if not indices:
         return defaults
@@ -423,9 +416,9 @@ def read_taper_values(creator: str) -> tuple:
     for idx in indices:
         try:
             pos = cmds.getAttr(
-                "{0}[{1}].scaleProfile_Position".format(ramp_attr, idx))
+                "{0}[{1}].taperCurve_Position".format(ramp_attr, idx))
             val = cmds.getAttr(
-                "{0}[{1}].scaleProfile_FloatValue".format(ramp_attr, idx))
+                "{0}[{1}].taperCurve_FloatValue".format(ramp_attr, idx))
             entries.append((float(pos), float(val)))
         except Exception:
             continue
@@ -480,7 +473,8 @@ def get_settings(creator: str) -> dict:
         "profilePolyType": _get("profilePolyType"),
         "scaleProfileX": _get("scaleProfileX"),
         "scaleProfileY": _get("scaleProfileY"),
-        "twistAngle": _get("twistAngle"),
+        "scaleProfileUniform": _get("scaleProfileUniform"),
+        "twist": _get("twist"),
         "rotateProfile": _get("rotateProfile"),
         "interpolationSteps": _get("interpolationSteps"),
         "interpolationPrecision": _get("interpolationPrecision"),

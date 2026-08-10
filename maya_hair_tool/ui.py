@@ -349,18 +349,19 @@ class HairBuilderUI(object):
             "表示)".format(attr))
 
     def _set_uniform_scale(self, value):
+        """Set the sweep's uniform scale (``scaleProfileUniform``).
+
+        Uses Maya's own uniform multiplier rather than writing
+        scaleProfileX and scaleProfileY to the same value — the latter
+        would flatten a preset with a non-1.0 Y ratio (e.g. Oval's
+        Y=0.55 would be forced to Thickness×1.0).
+        """
         def setter(c):
-            # Guard each attribute individually — some Maya versions
-            # rename or omit one of the scale scalars, and the previous
-            # unguarded pattern would raise on the missing one and
-            # abort the whole setter (leaving the other attribute
-            # un-set too).
-            v = float(value)
-            for attr in ("scaleProfileX", "scaleProfileY"):
-                if cmds.attributeQuery(attr, node=c, exists=True):
-                    cmds.setAttr(c + "." + attr, v)
-                else:
-                    self._warn_missing(attr)
+            attr = "scaleProfileUniform"
+            if cmds.attributeQuery(attr, node=c, exists=True):
+                cmds.setAttr(c + "." + attr, float(value))
+            else:
+                self._warn_missing(attr)
         return setter
 
     def _set_attr(self, attr, value, cast=float):
@@ -457,12 +458,12 @@ class HairBuilderUI(object):
     # --- Twist ---
     def _cb_twist_drag(self, *_):
         self._live_apply(
-            self._set_attr("twistAngle", _read_float(self.twist)),
+            self._set_attr("twist", _read_float(self.twist)),
             record_undo=False)
 
     def _cb_twist_change(self, *_):
         self._live_apply(
-            self._set_attr("twistAngle", _read_float(self.twist)),
+            self._set_attr("twist", _read_float(self.twist)),
             record_undo=True)
 
     # --- Rotation ---
@@ -611,9 +612,9 @@ class HairBuilderUI(object):
         scalar_plan = []      # multiplicative attrs
         delta_plan = []       # additive attrs (Relative uses +, not *)
         if not batch.is_identity(thickness, 1.0):
-            # Uniform scale wins over per-axis overrides.
-            scalar_plan.append(("scaleProfileX", thickness))
-            scalar_plan.append(("scaleProfileY", thickness))
+            # scaleProfileUniform preserves per-axis ratio (Oval etc.)
+            # instead of flattening X = Y = value.
+            scalar_plan.append(("scaleProfileUniform", thickness))
         else:
             if not batch.is_identity(width, 1.0):
                 scalar_plan.append(("scaleProfileX", width))
@@ -624,9 +625,9 @@ class HairBuilderUI(object):
             # the slider as a delta added to each strand's current
             # twist. Absolute is a straight set as before.
             if is_absolute:
-                scalar_plan.append(("twistAngle", twist))
+                scalar_plan.append(("twist", twist))
             else:
-                delta_plan.append(("twistAngle", twist))
+                delta_plan.append(("twist", twist))
         # Subdivision applies only in Absolute mode, and only when the
         # user actually moved it off the default (8). Skipping the
         # default avoids stomping user-tuned subdiv while they tweak

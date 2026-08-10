@@ -31,30 +31,54 @@ from . import sweep_utils as su
 
 
 # Attributes we copy verbatim from the source sweepMeshCreator to the
-# duplicate. Extend this list rather than iterating ``listAttr`` blindly
-# — many creator attributes are read-only, connected, or represent live
-# geometry we do NOT want to force-set on the duplicate.
+# duplicate. Names were verified against Maya 2023's actual node
+# schema; earlier versions of this list contained guessed names
+# (twistAngle / profileSubDiv / etc.) that silently no-op'd because
+# ``_copy_scalar_attrs`` filters via ``attributeQuery(exists=True)``.
 _SCALAR_ATTRS = (
+    # Profile shape
     "profilePolyType",
+    "sweepProfileType",
+    "profilePolySides",
+    "profilePolyInnerRadius",
+    # Scale / rotate / translate
     "scaleProfileX",
     "scaleProfileY",
-    "twistAngle",
+    "scaleProfileUniform",
     "rotateProfile",
+    "translateProfileX",
+    "translateProfileY",
+    "twist",
+    "taper",
+    # Interpolation along curve
     "interpolationSteps",
     "interpolationPrecision",
-    "profileSubDiv",
-    "profileArc",
-    "profileArcType",
-    "profileRoundnessX",
-    "profileRoundnessY",
-    "distributionMode",
-    "startSweep",
-    "endSweep",
-    "sweepUseCustomRange",
-    "capComponents",
-    "smoothNormals",
-    "reverseNormal",
-    "uvSetName",
+    "interpolationDistance",
+    "interpolationMode",
+    "interpolationOptimize",
+    # Caps / UVs / normals
+    "capsEnable",
+    "createUVs",
+    "normalsSmoothing",
+    "normalsReverse",
+    # Behaviour
+    "automaticRoll",
+    "alignProfileEnable",
+    "alignProfileHorizontal",
+    "alignProfileVertical",
+    # Per-preset profile parameters (relevant when profilePolyType
+    # picks the corresponding shape)
+    "profileArcAngle",
+    "profileArcSegments",
+    "profileRectWidth",
+    "profileRectHeight",
+    "profileRectCornerRadius",
+    "profileRectCornerDepth",
+    "profileRectCornerSegments",
+    "profileWaveAmplitude",
+    "profileWaveCycles",
+    "profileWaveOffset",
+    "profileWaveSegments",
 )
 
 
@@ -197,19 +221,22 @@ def _copy_scalar_attrs(src: str, dst: str) -> None:
 
 
 def _copy_scale_profile_ramp(src: str, dst: str) -> None:
-    """Clone the ``scaleProfile`` ramp entries wholesale.
+    """Clone the ``taperCurve`` ramp entries wholesale.
 
     Rewritten as clear-then-fill rather than trying to patch existing
     entries — Maya's ramp attributes are multi-index and their default
     single-entry state must be wiped first, otherwise the new curve
     inherits a phantom entry from the fresh sweep.
+
+    (The function name still says "scale profile" for backwards
+    compatibility, but the Maya attribute is ``taperCurve``.)
     """
-    if not cmds.attributeQuery("scaleProfile", node=src, exists=True):
+    if not cmds.attributeQuery("taperCurve", node=src, exists=True):
         return
-    if not cmds.attributeQuery("scaleProfile", node=dst, exists=True):
+    if not cmds.attributeQuery("taperCurve", node=dst, exists=True):
         return
 
-    dst_attr = dst + ".scaleProfile"
+    dst_attr = dst + ".taperCurve"
     dst_indices = cmds.getAttr(dst_attr, multiIndices=True) or []
     for idx in dst_indices:
         try:
@@ -218,30 +245,30 @@ def _copy_scale_profile_ramp(src: str, dst: str) -> None:
         except Exception:
             pass
 
-    src_attr = src + ".scaleProfile"
+    src_attr = src + ".taperCurve"
     src_indices = cmds.getAttr(src_attr, multiIndices=True) or []
     for out_i, src_i in enumerate(src_indices):
         try:
             pos = cmds.getAttr(
-                "{0}[{1}].scaleProfile_Position".format(src_attr, src_i))
+                "{0}[{1}].taperCurve_Position".format(src_attr, src_i))
             val = cmds.getAttr(
-                "{0}[{1}].scaleProfile_FloatValue".format(src_attr, src_i))
+                "{0}[{1}].taperCurve_FloatValue".format(src_attr, src_i))
             interp = cmds.getAttr(
-                "{0}[{1}].scaleProfile_Interp".format(src_attr, src_i))
+                "{0}[{1}].taperCurve_Interp".format(src_attr, src_i))
             cmds.setAttr(
-                "{0}[{1}].scaleProfile_Position".format(dst_attr, out_i), pos)
+                "{0}[{1}].taperCurve_Position".format(dst_attr, out_i), pos)
             cmds.setAttr(
-                "{0}[{1}].scaleProfile_FloatValue".format(dst_attr, out_i),
+                "{0}[{1}].taperCurve_FloatValue".format(dst_attr, out_i),
                 val)
             cmds.setAttr(
-                "{0}[{1}].scaleProfile_Interp".format(dst_attr, out_i),
+                "{0}[{1}].taperCurve_Interp".format(dst_attr, out_i),
                 interp)
         except Exception as exc:
             # Warn instead of silently dropping the entry — same
             # policy as _copy_scalar_attrs so users find out when a
             # taper point failed to replicate.
             cmds.warning(
-                "[maya_hair_tool] scaleProfile entry {0} → {1} at "
+                "[maya_hair_tool] taperCurve entry {0} → {1} at "
                 "index {2}/{3} failed to copy: {4}".format(
                     src, dst, src_i, out_i, exc))
 

@@ -39,7 +39,8 @@ def is_identity(value: float, identity: float = 1.0) -> bool:
 ATTRS_BATCH = (
     "scaleProfileX",
     "scaleProfileY",
-    "twistAngle",
+    "scaleProfileUniform",
+    "twist",
     "rotateProfile",
     "interpolationSteps",
     "interpolationPrecision",
