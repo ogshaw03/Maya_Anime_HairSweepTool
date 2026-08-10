@@ -37,6 +37,12 @@ WINDOW_NAME = _PACKAGE + "Win"
 WINDOW_TITLE = "アニメヘアビルダー"
 
 
+# Widget-to-taperCurve value scale — ``gradientControlNoAttr`` shows
+# values in a 0..1 band, but our taperCurve slider range is 0..3
+# (Root/Middle/Tip). We map linearly through this constant.
+TAPER_EDITOR_MAX = 3.0
+
+
 # Profile presets are stored in ``constants.py`` under English keys.
 # The UI shows Japanese-first labels; ``_PROFILE_LABEL_TO_KEY`` maps
 # the selected label back to the key ``hair.set_profile`` accepts.
@@ -83,6 +89,12 @@ class HairBuilderUI(object):
         # Hair list panel widget + scriptJob id for cleanup.
         self.hair_list = None
         self._script_jobs = []
+
+        # Taper curve editor widget + re-entrancy guard so the two
+        # sync directions (widget → taperCurve and taperCurve → widget)
+        # don't ping-pong each other during a drag.
+        self.taper_editor = None
+        self._taper_syncing = False
 
         # Curve panel widgets (create-a-curve shortcuts).
         self.curve_length = None
@@ -177,10 +189,21 @@ class HairBuilderUI(object):
                 self._script_jobs.append(jid)
             except Exception:
                 pass
+        # SelectionChanged drives the inline taper editor sync so the
+        # widget always mirrors the strand you're currently editing.
+        try:
+            jid = cmds.scriptJob(
+                parent=WINDOW_NAME,
+                event=["SelectionChanged",
+                        self._sync_taper_editor_from_creator])
+            self._script_jobs.append(jid)
+        except Exception:
+            pass
 
         cmds.showWindow(WINDOW_NAME)
-        # Populate the list once on show.
+        # Populate the list + taper editor once on show.
         self._refresh_hair_list()
+        self._sync_taper_editor_from_creator()
 
     # -----------------------------------------------------------------
     # Hair list panel — enumerate strands tagged animeHairTool so the
@@ -451,12 +474,14 @@ class HairBuilderUI(object):
             col, "先端スケール", C.DEFAULT_TIP_SCALE, 0.0, 3.0,
             drag_cb=self._cb_tip_drag,
             change_cb=self._cb_tip_change)
+        # Inline taper curve editor (works without leaving the panel).
+        self._build_taper_editor(col)
+
         cmds.button(
-            label="テーパーカーブを詳細編集 (AE を開く)",
-            annotation=("選択毛束の sweepMeshCreator を Attribute "
-                        "Editor で開きます。Taper Curve セクションで "
-                        "任意の数のポイントをプロファイル曲線として "
-                        "編集できます。"),
+            label="テーパーカーブを Attribute Editor で開く",
+            annotation=("Maya ネイティブの Taper Curve ramp widget を"
+                        "開きます。カーブエディタと同じ内容を編集"
+                        "できます。"),
             command=self._on_open_taper_editor, parent=col,
         )
         self.twist = _slider_with_reset(
@@ -508,6 +533,146 @@ class HairBuilderUI(object):
             except Exception as exc:
                 cmds.warning(
                     "AE を開けませんでした: {0}".format(exc))
+
+    # -----------------------------------------------------------------
+    # Inline taper curve editor (gradientControlNoAttr wrapper)
+    # -----------------------------------------------------------------
+    def _build_taper_editor(self, parent):
+        cmds.text(
+            label=("テーパーカーブ (プロファイル):"),
+            align="left", parent=parent, font="smallBoldLabelFont",
+        )
+        cmds.text(
+            label=("左右ドラッグで既存ポイント移動、右クリックで"
+                   "ポイント追加/削除。カーブ Y=1.0 が最大 (0-3 に "
+                   "スケール)。Root/Middle/Tip スライダーは 3 点"
+                   "上書きするので、追加ポイントを残したい場合は"
+                   "スライダー↺リセットを使わず、このエディタで"
+                   "調整してください。"),
+            align="left", parent=parent,
+            font="smallObliqueLabelFont", wordWrap=True,
+        )
+        try:
+            self.taper_editor = cmds.gradientControlNoAttr(
+                height=100,
+                changeCommand=self._on_taper_editor_change,
+                parent=parent,
+            )
+        except Exception as exc:
+            cmds.warning(
+                "[maya_hair_tool] テーパーエディタを作成できません: "
+                "{0}".format(exc))
+            self.taper_editor = None
+            return
+
+        row = cmds.rowLayout(
+            numberOfColumns=2, adjustableColumn=1,
+            columnAttach=[(1, "both", 2), (2, "both", 2)],
+            columnWidth2=(160, 160), parent=parent,
+        )
+        cmds.button(
+            label="毛束から再読み込み",
+            annotation=("選択毛束の現在の taperCurve を"
+                        "エディタに読み込みます。"),
+            command=self._on_taper_reload, parent=row,
+        )
+        cmds.button(
+            label="3 点デフォルトに戻す",
+            annotation=("Root=1.0 / Middle=1.0 / Tip=0.05 の"
+                        "3 点構成に戻します。"),
+            command=self._on_taper_reset_default, parent=row,
+        )
+        cmds.setParent("..")
+
+    def _sync_taper_editor_from_creator(self, creator=None):
+        """Load the first selected creator's taperCurve into the
+        editor widget. Values are compressed by ``TAPER_EDITOR_MAX``
+        so the widget's 0-1 canvas covers the full 0-3 taper range."""
+        if self._taper_syncing or not self.taper_editor:
+            return
+        if creator is None:
+            creators = su.sweep_creators_from_selection()
+            if not creators:
+                return
+            creator = creators[0]
+        try:
+            entries = hair.read_taper_ramp_entries(creator)
+        except Exception:
+            entries = []
+        if not entries:
+            return
+        parts = []
+        for pos, val, interp in entries:
+            w_val = max(0.0, min(1.0, val / TAPER_EDITOR_MAX))
+            parts.append("{0},{1},{2}".format(pos, w_val, interp))
+        gradient_str = ",".join(parts)
+        self._taper_syncing = True
+        try:
+            cmds.gradientControlNoAttr(
+                self.taper_editor, edit=True, asString=gradient_str)
+        except Exception as exc:
+            cmds.warning(
+                "[maya_hair_tool] テーパーエディタへの反映に失敗: "
+                "{0}".format(exc))
+        finally:
+            self._taper_syncing = False
+
+    def _on_taper_editor_change(self, *_):
+        """User dragged / added / removed a point in the widget →
+        parse ``asString`` and push back to every selected creator's
+        taperCurve. Wrapped in an undo chunk for a single Ctrl+Z."""
+        if self._taper_syncing or not self.taper_editor:
+            return
+        try:
+            s = cmds.gradientControlNoAttr(
+                self.taper_editor, query=True, asString=True) or ""
+        except Exception:
+            return
+        entries = []
+        # asString format is "pos,val,interp,pos,val,interp,..."
+        # (comma separated). We split every 3 fields.
+        parts = [p for p in s.split(",") if p.strip()]
+        for i in range(0, len(parts) - 2, 3):
+            try:
+                pos = float(parts[i])
+                w_val = float(parts[i + 1])
+                interp = int(float(parts[i + 2]))
+                entries.append((pos, w_val * TAPER_EDITOR_MAX, interp))
+            except Exception:
+                continue
+        if not entries:
+            return
+        creators = su.sweep_creators_from_selection()
+        if not creators:
+            return
+        self._taper_syncing = True
+        try:
+            with batch.batch_undo_chunk("HairTaperCurveEdit"):
+                for c in creators:
+                    try:
+                        hair.write_taper_ramp_entries(c, entries)
+                    except Exception as exc:
+                        cmds.warning(
+                            "[maya_hair_tool] taperCurve 書き込み失敗 "
+                            "({0}): {1}".format(c, exc))
+        finally:
+            self._taper_syncing = False
+
+    def _on_taper_reload(self, *_):
+        self._sync_taper_editor_from_creator()
+
+    def _on_taper_reset_default(self, *_):
+        creators = su.sweep_creators_from_selection()
+        entries = [
+            (0.0, C.DEFAULT_ROOT_SCALE, 2),
+            (0.5, C.DEFAULT_MIDDLE_SCALE, 2),
+            (1.0, C.DEFAULT_TIP_SCALE, 2),
+        ]
+        if creators:
+            with batch.batch_undo_chunk("HairTaperReset"):
+                for c in creators:
+                    hair.write_taper_ramp_entries(c, entries)
+        self._sync_taper_editor_from_creator()
 
     def _on_create(self, *_):
         label = cmds.optionMenu(

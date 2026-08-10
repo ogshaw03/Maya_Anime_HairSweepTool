@@ -414,6 +414,70 @@ def set_taper_profile(
         cmds.setAttr("{0}[{1}].taperCurve_Interp".format(ramp_attr, i), interp)
 
 
+def read_taper_ramp_entries(creator: str) -> list:
+    """Return every entry on the ``taperCurve`` ramp, sorted by
+    position, as a list of ``(position, value, interpolation)``
+    tuples. Used by the UI's inline taper curve editor to round-trip
+    an arbitrary number of ramp points."""
+    if not cmds.attributeQuery("taperCurve", node=creator, exists=True):
+        return []
+    ramp_attr = creator + ".taperCurve"
+    indices = cmds.getAttr(ramp_attr, multiIndices=True) or []
+    entries = []
+    for idx in indices:
+        try:
+            pos = cmds.getAttr(
+                "{0}[{1}].taperCurve_Position".format(ramp_attr, idx))
+            val = cmds.getAttr(
+                "{0}[{1}].taperCurve_FloatValue".format(ramp_attr, idx))
+            interp = cmds.getAttr(
+                "{0}[{1}].taperCurve_Interp".format(ramp_attr, idx))
+            entries.append((float(pos), float(val), int(interp)))
+        except Exception:
+            continue
+    entries.sort(key=lambda e: e[0])
+    return entries
+
+
+def write_taper_ramp_entries(creator: str, entries) -> None:
+    """Replace the ``taperCurve`` ramp with ``entries``.
+
+    ``entries`` is an iterable of ``(position, value, interpolation)``
+    tuples. Existing entries are wiped first so no phantom points
+    survive; interpolation defaults to Spline (2) when the caller
+    doesn't specify it.
+    """
+    if not cmds.attributeQuery("taperCurve", node=creator, exists=True):
+        return
+    ramp_attr = creator + ".taperCurve"
+    for idx in list(cmds.getAttr(ramp_attr, multiIndices=True) or []):
+        try:
+            cmds.removeMultiInstance(
+                "{0}[{1}]".format(ramp_attr, idx), b=True)
+        except Exception:
+            pass
+    for i, entry in enumerate(entries):
+        if len(entry) >= 3:
+            pos, val, interp = entry[0], entry[1], entry[2]
+        else:
+            pos, val = entry[0], entry[1]
+            interp = 2
+        try:
+            cmds.setAttr(
+                "{0}[{1}].taperCurve_Position".format(ramp_attr, i),
+                float(pos))
+            cmds.setAttr(
+                "{0}[{1}].taperCurve_FloatValue".format(ramp_attr, i),
+                float(val))
+            cmds.setAttr(
+                "{0}[{1}].taperCurve_Interp".format(ramp_attr, i),
+                int(interp))
+        except Exception as exc:
+            cmds.warning(
+                "[maya_hair_tool] taperCurve entry {0} write failed: "
+                "{1}".format(i, exc))
+
+
 def read_taper_values(creator: str) -> tuple:
     """Return ``(root, middle, tip)`` from the current ``taperCurve`` ramp.
 
