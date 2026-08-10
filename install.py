@@ -55,6 +55,7 @@ _REMOTE_FILES = (
     _PACKAGE + "/duplicate.py",
     _PACKAGE + "/batch.py",
     _PACKAGE + "/library.py",
+    _PACKAGE + "/braid.py",
     _PACKAGE + "/ui.py",
 )
 # ─── END CUSTOMIZE ────────────────────────────────────────────────────────

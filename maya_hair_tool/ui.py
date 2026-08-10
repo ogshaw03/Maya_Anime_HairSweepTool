@@ -20,6 +20,7 @@ except ImportError:  # pragma: no cover
 
 from . import __version__
 from . import batch
+from . import braid
 from . import constants as C
 from . import duplicate
 from . import hair
@@ -918,6 +919,53 @@ class HairBuilderUI(object):
         )
         cmds.separator(height=6, style="none", parent=col)
 
+        # --- Phase 6: Braid Generator (三つ編み) --------------------
+        # Own collapsible frame so it doesn't visually crowd the
+        # normal-hair sliders below. Placed just under the top
+        # "generate" button so both creation actions are near the
+        # top of the panel.
+        braid_frame = cmds.frameLayout(
+            label="三つ編み (Braid) — スパインカーブから 3 本自動生成",
+            collapsable=True, collapse=False, marginHeight=4,
+            marginWidth=4, parent=col,
+        )
+        braid_col = cmds.columnLayout(
+            adjustableColumn=True, rowSpacing=3, parent=braid_frame)
+        cmds.text(
+            label=("スパイン用の NURBS カーブを 1 本選択して"
+                   "「三つ編みを作成」を押します。3 本の螺旋"
+                   "ストランドが生成され、自動で Braid_NN グループに"
+                   "まとめられます。各ストランドは通常の毛束と同じ"
+                   "スライダー / グループ調整ができます。"),
+            align="left", parent=braid_col,
+            font="smallObliqueLabelFont", wordWrap=True,
+        )
+        self.braid_turns = _slider_with_reset(
+            braid_col, "編みの周期 (Turns per Length)",
+            C.DEFAULT_BRAID_TURNS_PER_LENGTH, 0.05, 3.0,
+            drag_cb=None, change_cb=None)
+        self.braid_radius = _slider_with_reset(
+            braid_col, "編みの太さ (Braid Radius)",
+            C.DEFAULT_BRAID_RADIUS, 0.05, 5.0,
+            drag_cb=None, change_cb=None)
+        self.braid_thickness = _slider_with_reset(
+            braid_col, "ストランド 1 本の太さ (Strand Thickness)",
+            C.DEFAULT_BRAID_STRAND_THICKNESS, 0.01, 3.0,
+            drag_cb=None, change_cb=None)
+        self.braid_tip_taper = _slider_with_reset(
+            braid_col, "先細り (Tip Taper 0-1)",
+            C.DEFAULT_BRAID_TIP_TAPER, 0.0, 1.0,
+            drag_cb=None, change_cb=None)
+        cmds.button(
+            label="▶ 三つ編みを作成",
+            height=32,
+            annotation=("選択中の NURBS カーブをスパインとして"
+                        "3 本の螺旋ストランドを生成し、"
+                        "Braid_NN グループにまとめます。"),
+            command=self._on_create_braid, parent=braid_col,
+        )
+        cmds.separator(height=6, style="none", parent=col)
+
         cmds.text(label="プロファイル", align="left", parent=col)
         self.profile_menu = cmds.optionMenu(
             parent=col, changeCommand=self._cb_profile_change)
@@ -1361,6 +1409,23 @@ class HairBuilderUI(object):
         # Explicit refresh — DagObjectCreated scriptJob usually catches
         # this too but firing immediately makes the new strand appear
         # in the list before any DG lag.
+        self._refresh_hair_list()
+
+    def _on_create_braid(self, *_):
+        """Phase 6 Braid Generator entry. Reads the 4 braid sliders,
+        delegates to ``braid.create_braid_from_spine`` which handles
+        selection validation, curve sampling, strand generation, hair
+        pipeline hand-off, and auto-grouping."""
+        try:
+            braid.create_braid_from_spine(
+                turns_per_length=_read_float(self.braid_turns),
+                radius=_read_float(self.braid_radius),
+                strand_thickness=_read_float(self.braid_thickness),
+                tip_taper=_read_float(self.braid_tip_taper),
+            )
+        except RuntimeError as exc:
+            cmds.warning(str(exc))
+            return
         self._refresh_hair_list()
 
     # -----------------------------------------------------------------

@@ -90,3 +90,20 @@ GROUP_COLOR_B_ATTR = "hairGroupColorB"
 GROUP_COLOR_SET = "hairGroupColorSet"
 GROUP_COLOR_MATERIAL_PREFIX = "hairGroupMat_"   # legacy (v0.3.8/9)
 ORIGINAL_SHADING_GROUP_ATTR = "hairOriginalSG"  # legacy (v0.3.8/9)
+
+
+# --------------------------------------------------------------------------- #
+# Phase 6 — Braid Generator
+# --------------------------------------------------------------------------- #
+
+# Naming convention for auto-created braid groups (Braid_01, Braid_02, ...).
+BRAID_GROUP_PREFIX = "Braid_"
+
+# Braid defaults — chosen for a typical anime-length spine (~10 units).
+# ``turns_per_length`` is a rate (turns per unit of spine arc length),
+# so a longer spine gets proportionally more twists at the same setting.
+DEFAULT_BRAID_TURNS_PER_LENGTH = 0.5   # ~5 full turns over a 10-unit spine
+DEFAULT_BRAID_RADIUS = 0.5             # offset from spine to each strand centre
+DEFAULT_BRAID_STRAND_THICKNESS = 0.4   # per-strand mesh thickness
+DEFAULT_BRAID_TIP_TAPER = 0.6          # 0=constant radius, 1=radius→0 at tip
+DEFAULT_BRAID_SAMPLES = 32             # helix smoothness; 32 covers most spines
