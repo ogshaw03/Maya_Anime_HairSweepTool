@@ -128,7 +128,7 @@ def create_default_curve(
 # ---------------------------------------------------------------------------
 
 def create_hair_from_selected_curves(
-    profile: str = C.PROFILE_ROUND,
+    profile: str = C.PROFILE_CIRCLE,
     thickness: float = C.DEFAULT_THICKNESS,
     width: float = C.DEFAULT_WIDTH,
     height: float = C.DEFAULT_HEIGHT,

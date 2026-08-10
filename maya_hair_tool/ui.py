@@ -287,7 +287,7 @@ class HairBuilderUI(object):
     def _on_create(self, *_):
         label = cmds.optionMenu(
             self.profile_menu, query=True, value=True)
-        profile = _PROFILE_LABEL_TO_KEY.get(label, C.PROFILE_ROUND)
+        profile = _PROFILE_LABEL_TO_KEY.get(label, C.PROFILE_CIRCLE)
         hair.create_hair_from_selected_curves(
             profile=profile,
             thickness=_read_float(self.thickness),
@@ -415,7 +415,7 @@ class HairBuilderUI(object):
     def _cb_profile_change(self, *_):
         label = cmds.optionMenu(
             self.profile_menu, query=True, value=True)
-        key = _PROFILE_LABEL_TO_KEY.get(label, C.PROFILE_ROUND)
+        key = _PROFILE_LABEL_TO_KEY.get(label, C.PROFILE_CIRCLE)
         def setter(c):
             hair.set_profile(c, key)
         self._live_apply(setter, record_undo=True)
