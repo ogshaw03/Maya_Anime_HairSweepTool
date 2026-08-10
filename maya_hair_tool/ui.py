@@ -2350,15 +2350,22 @@ class HairBuilderUI(object):
         )
         if result != "削除":
             return
-        # Refresh grid FIRST so Maya's iconTextButton releases the
-        # png file handle before we try to remove it.
-        self._refresh_internal_library_grid()
+        # 1. Delete the scene nodes and capture the thumbnail path.
         try:
-            library.delete_internal_library_entry(preset_mesh)
+            thumb = library.delete_internal_library_entry_nodes(
+                preset_mesh)
         except Exception as exc:
             cmds.warning(str(exc))
             return
+        # 2. Refresh the grid — the doomed preset drops off the list
+        #    and its iconTextButton is destroyed, releasing the png
+        #    file handle Maya was holding on Windows.
         self._refresh_internal_library_grid()
+        # 3. Now the handle is free, remove the png.
+        try:
+            library.delete_internal_library_thumb(thumb)
+        except Exception as exc:
+            cmds.warning(str(exc))
 
     def _export_internal_to_external(self, preset_mesh, default_name):
         """内部プリセットを .ma に書き出して外部ライブラリに登録。"""

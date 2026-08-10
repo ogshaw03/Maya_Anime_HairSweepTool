@@ -263,6 +263,13 @@ def _snapshot_thumbnail(target_path: str,
     except Exception:
         pass
 
+    # Track any (node, prev_visibility) we override so we can undo
+    # after playblast. Needed because the InLibrary group is created
+    # with visibility=0, so preset strands live under a hidden
+    # ancestor — isolateSelect doesn't override that, so playblast
+    # would render a blank frame otherwise.
+    vis_restores = []
+
     temp_cam = None
     target_maya = target_path.replace("\\", "/")
     ok = False
@@ -288,6 +295,42 @@ def _snapshot_thumbnail(target_path: str,
                 cmds.warning(
                     "[maya_hair_tool] lookThru 失敗 (続行): "
                     "{0}".format(exc))
+
+        # Force focus + all ancestors visible for the duration of the
+        # snapshot. Presets stored inside InLibrary have a hidden
+        # ancestor by design (InLibrary.visibility=0), and
+        # isolateSelect does NOT override that — the panel would
+        # render an empty frame. We flip visibility on here, record
+        # what we changed, and restore in ``finally``.
+        if focus:
+            for f in focus:
+                if not cmds.objExists(f):
+                    continue
+                # Walk from focus up to scene root.
+                node = f
+                chain = [f]
+                while True:
+                    try:
+                        parents = cmds.listRelatives(
+                            node, parent=True, fullPath=True) or []
+                    except Exception:
+                        parents = []
+                    if not parents:
+                        break
+                    chain.append(parents[0])
+                    node = parents[0]
+                for n in chain:
+                    try:
+                        cur = cmds.getAttr(n + ".visibility")
+                    except Exception:
+                        continue
+                    if cur:
+                        continue
+                    try:
+                        cmds.setAttr(n + ".visibility", True)
+                        vis_restores.append((n, False))
+                    except Exception:
+                        pass
 
         # Isolate: toggle off → on to reset the isolate list,
         # then re-add our focus so the panel shows ONLY it.
@@ -418,6 +461,14 @@ def _snapshot_thumbnail(target_path: str,
                 cmds.isolateSelect(panel, state=int(prev_iso_state))
         except Exception:
             pass
+        # Restore any visibility flags we flipped ON to force the
+        # focus to render (typically InLibrary's hidden ancestor).
+        for n, prev in vis_restores:
+            try:
+                if cmds.objExists(n):
+                    cmds.setAttr(n + ".visibility", prev)
+            except Exception:
+                pass
         try:
             if prev_sel:
                 cmds.select(prev_sel, replace=True)
@@ -802,34 +853,66 @@ def import_from_internal(preset_mesh: str) -> Optional[str]:
     return new_mesh
 
 
-def delete_internal_library_entry(preset_mesh: str) -> None:
-    """Remove a preset from InLibrary along with its guide curve
-    and its UUID-keyed thumbnail file. Silently ignores missing
-    nodes so double-clicks are harmless."""
+def delete_internal_library_entry_nodes(preset_mesh: str) -> str:
+    """Delete a preset's scene nodes (mesh transform + guide curve),
+    return the UUID-keyed thumbnail path so the caller can remove the
+    png AFTER refreshing the grid (necessary because Maya's
+    iconTextButton keeps a file handle on displayed images —
+    ``os.remove`` while the button is alive silently fails on
+    Windows).
+
+    Returns the thumbnail path (may be an empty string if the UUID
+    couldn't be resolved). Callers should refresh the icon grid,
+    then call ``delete_internal_library_thumb(path)`` if the returned
+    path is non-empty."""
     if cmds is None:
-        return
+        return ""
     if not cmds.objExists(preset_mesh):
-        return
-    # Grab thumbnail path BEFORE we delete the node (afterwards
-    # the UUID lookup would fail).
-    thumb = internal_thumb_path(preset_mesh)
+        return ""
+    # Resolve UUID-keyed thumbnail path FIRST — after the node is
+    # gone the lookup would fail.
+    thumb = internal_thumb_path(preset_mesh) or ""
     creators = su.sweep_creators_from_nodes([preset_mesh])
     to_delete = [preset_mesh]
     for c in creators:
         curve = su.curve_from_creator(c)
         if curve and cmds.objExists(curve):
             to_delete.append(curve)
+    errors = []
     for n in to_delete:
-        if cmds.objExists(n):
-            try:
-                cmds.delete(n)
-            except Exception:
-                pass
-    if thumb and os.path.isfile(thumb):
+        if not cmds.objExists(n):
+            continue
         try:
-            os.remove(thumb)
-        except Exception:
-            pass
+            cmds.delete(n)
+        except Exception as exc:
+            errors.append("{0}: {1}".format(n, exc))
+    if errors:
+        cmds.warning(
+            "[maya_hair_tool] 内部プリセット削除で一部ノードが残り"
+            "ました: " + " / ".join(errors))
+    return thumb
+
+
+def delete_internal_library_thumb(thumb_path: str) -> None:
+    """Remove a UUID-keyed thumbnail png. No-op if empty / missing."""
+    if not thumb_path:
+        return
+    if not os.path.isfile(thumb_path):
+        return
+    try:
+        os.remove(thumb_path)
+    except Exception as exc:
+        cmds.warning(
+            "[maya_hair_tool] サムネ png 削除失敗 ({0}): "
+            "{1}".format(thumb_path, exc))
+
+
+def delete_internal_library_entry(preset_mesh: str) -> None:
+    """Backwards-compat wrapper — deletes scene nodes AND png in
+    one shot. Prefer the two-step API when called from UI code that
+    can refresh between the two so the png handle is released."""
+    thumb = delete_internal_library_entry_nodes(preset_mesh)
+    delete_internal_library_thumb(thumb)
 
 
 def save_external_to_internal(ma_path: str) -> List[str]:
