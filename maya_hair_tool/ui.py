@@ -936,7 +936,10 @@ class HairBuilderUI(object):
                    "「三つ編みを作成」を押します。3 本の螺旋"
                    "ストランドが生成され、自動で Braid_NN グループに"
                    "まとめられます。各ストランドは通常の毛束と同じ"
-                   "スライダー / グループ調整ができます。"),
+                   "スライダー / グループ調整ができます。\n"
+                   "※ 生成後にスパインカーブを編集しても三つ編みは"
+                   "追従しません。作り直す場合は再度ボタンを押して"
+                   "ください (前回分は Ctrl+Z で戻せます)。"),
             align="left", parent=braid_col,
             font="smallObliqueLabelFont", wordWrap=True,
         )
@@ -1415,7 +1418,11 @@ class HairBuilderUI(object):
         """Phase 6 Braid Generator entry. Reads the 4 braid sliders,
         delegates to ``braid.create_braid_from_spine`` which handles
         selection validation, curve sampling, strand generation, hair
-        pipeline hand-off, and auto-grouping."""
+        pipeline hand-off, and auto-grouping.
+
+        Catches broadly (not just RuntimeError) so slider-read /
+        arithmetic issues surface as UI warnings instead of a bare
+        Script Editor traceback."""
         try:
             braid.create_braid_from_spine(
                 turns_per_length=_read_float(self.braid_turns),
@@ -1423,8 +1430,8 @@ class HairBuilderUI(object):
                 strand_thickness=_read_float(self.braid_thickness),
                 tip_taper=_read_float(self.braid_tip_taper),
             )
-        except RuntimeError as exc:
-            cmds.warning(str(exc))
+        except Exception as exc:
+            cmds.warning("[maya_hair_tool] 三つ編み生成失敗: {0}".format(exc))
             return
         self._refresh_hair_list()
 

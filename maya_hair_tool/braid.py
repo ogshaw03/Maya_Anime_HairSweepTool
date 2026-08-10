@@ -249,6 +249,52 @@ def _build_strand_curve(
 # Public API
 # --------------------------------------------------------------------------- #
 
+def _cleanup_partial_braid(
+    strand_curves: List[str],
+    keep_meshes: Optional[List[str]] = None,
+) -> None:
+    """Undo an in-flight braid generation. Called when
+    ``create_hair_from_selected_curves`` raises or under-delivers
+    (fewer than 3 strand meshes made it back), so the user doesn't
+    end up with a lopsided half-braid + orphan curves.
+
+    Iterates the curves we spawned via ``_build_strand_curve``; for
+    each still-alive curve, walks its outConnections to any
+    ``sweepMeshCreator`` and deletes the resulting mesh transform
+    before deleting the curve itself. ``keep_meshes`` skips the
+    still-good strand meshes so a re-raise upstream doesn't wipe
+    everything.
+    """
+    keep = set(keep_meshes or [])
+    for curve in strand_curves:
+        if not curve or not cmds.objExists(curve):
+            continue
+        # Curve → sweepMeshCreator → mesh transform.
+        try:
+            creators = su.sweep_creators_from_nodes([curve]) or []
+        except Exception:
+            creators = []
+        for creator in creators:
+            try:
+                mesh = su.mesh_from_creator(creator)
+            except Exception:
+                mesh = None
+            if mesh and mesh not in keep and cmds.objExists(mesh):
+                try:
+                    cmds.delete(mesh)
+                except Exception:
+                    pass
+            if cmds.objExists(creator):
+                try:
+                    cmds.delete(creator)
+                except Exception:
+                    pass
+        try:
+            cmds.delete(curve)
+        except Exception:
+            pass
+
+
 def _next_braid_group_name() -> str:
     """Return the next available ``Braid_NN`` name (scans existing
     hair groups so the numbering doesn't reuse a deleted slot's
@@ -334,12 +380,12 @@ def create_braid_from_spine(
     # Clamp sample count so degenerate inputs don't blow up.
     num_samples = max(4, int(num_samples))
 
-    # Sample spine and compute parallel-transport frames.
-    positions = _sample_positions(spine_curve, num_samples)
-    tangents = _tangents_from_positions(positions)
-    normals, binormals = _parallel_transport_frames(tangents)
-
-    spine_length = _arc_length(positions)
+    # Coarse sample first — just to estimate arc length. This is
+    # what tells us how many turns the braid will actually complete
+    # (``turns_per_length`` is a rate); we can't set a sensible
+    # final ``num_samples`` until we know that.
+    coarse_positions = _sample_positions(spine_curve, num_samples)
+    spine_length = _arc_length(coarse_positions)
     if spine_length < 1e-6:
         raise RuntimeError(
             "スパインカーブの長さがゼロ相当です。CV が重複していないか "
@@ -347,6 +393,23 @@ def create_braid_from_spine(
 
     # turns_per_length is a rate; total turns depends on the length.
     total_turns = turns_per_length * spine_length
+
+    # Nyquist / aliasing floor: bump ``num_samples`` up so the helix
+    # gets at least BRAID_SAMPLES_PER_TURN points per revolution.
+    # Without this, a long spine + high turns setting produces a
+    # zig-zag instead of a smooth spiral because the offset direction
+    # wraps around faster than we're sampling it.
+    required = int(math.ceil(
+        abs(total_turns) * C.BRAID_SAMPLES_PER_TURN))
+    if required > num_samples:
+        num_samples = required
+        positions = _sample_positions(spine_curve, num_samples)
+        spine_length = _arc_length(positions)
+    else:
+        positions = coarse_positions
+
+    tangents = _tangents_from_positions(positions)
+    normals, binormals = _parallel_transport_frames(tangents)
 
     # Undo chunking so 3-strand generation is one Ctrl+Z.
     cmds.undoInfo(openChunk=True, chunkName="createBraid")
@@ -368,13 +431,21 @@ def create_braid_from_spine(
         # Feed the three strand curves through the standard hair
         # pipeline. Select-then-call keeps this decoupled from any
         # refactor of create_hair_from_selected_curves.
+        #
+        # If mesh creation partially fails mid-loop (e.g. Maya's
+        # sweep plugin refuses to load on strand 2 of 3), clean up
+        # every curve/mesh we produced so the user gets an all-or-
+        # nothing result rather than a lopsided half-braid.
         cmds.select(strand_curves, replace=True)
-        # Use the same defaults as a normal hair strand except for
-        # thickness (we honour the user's braid slider) — the caller
-        # can always tweak individual strands afterward.
-        hair.create_hair_from_selected_curves(
-            thickness=strand_thickness,
-        )
+        try:
+            hair.create_hair_from_selected_curves(
+                thickness=strand_thickness,
+            )
+        except Exception as exc:
+            _cleanup_partial_braid(strand_curves)
+            raise RuntimeError(
+                "三つ編み生成中にエラーが発生し、生成途中のカーブ / "
+                "メッシュを破棄しました: {0}".format(exc))
 
         # ``create_hair_from_selected_curves`` selects the resulting
         # mesh transforms — grab those now.
@@ -385,6 +456,12 @@ def create_braid_from_spine(
             m for m in strand_meshes
             if hair._is_hair_strand_transform(m)
         ]
+        if len(strand_meshes) < 3:
+            _cleanup_partial_braid(strand_curves, keep_meshes=strand_meshes)
+            raise RuntimeError(
+                "三つ編み生成に失敗しました (期待 3 本 / 実際 {0} 本)。"
+                "sweepMeshCreator プラグインがロードされているか "
+                "確認してください。".format(len(strand_meshes)))
 
         if group and strand_meshes:
             group_name = _next_braid_group_name()
@@ -424,6 +501,12 @@ def create_braid_from_spine(
 # collide on the strand-curve names). Not persistent across scene
 # reloads — that's fine, the group-name uniquifier below is the
 # canonical numbering.
+
+# NOTE (design): braid strands are baked from the spine at creation
+# time — the spine is not connected via a DG dependency. Editing the
+# spine CV after creation does NOT update the braid; the user must
+# re-run "三つ編みを作成" against the edited spine. Chose baking over
+# live procedural per the design decision recorded in HANDOFF.md.
 _braid_call_counter = [0]
 
 

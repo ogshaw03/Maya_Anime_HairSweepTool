@@ -107,3 +107,9 @@ DEFAULT_BRAID_RADIUS = 0.5             # offset from spine to each strand centre
 DEFAULT_BRAID_STRAND_THICKNESS = 0.4   # per-strand mesh thickness
 DEFAULT_BRAID_TIP_TAPER = 0.6          # 0=constant radius, 1=radius→0 at tip
 DEFAULT_BRAID_SAMPLES = 32             # helix smoothness; 32 covers most spines
+# Nyquist / aliasing floor: fewer than this many samples PER FULL TURN and
+# the generated helix folds into a zig-zag instead of a smooth spiral.
+# 8 samples/turn keeps the curve visually smooth at any reasonable
+# tightness setting; the braid generator bumps ``num_samples`` up
+# automatically when ``turns_per_length * spine_length`` demands it.
+BRAID_SAMPLES_PER_TURN = 8

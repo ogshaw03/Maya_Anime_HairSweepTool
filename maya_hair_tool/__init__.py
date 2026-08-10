@@ -8,7 +8,7 @@ Public entry point::
     maya_hair_tool.show()
 """
 
-__version__ = "0.4.0"
+__version__ = "0.4.1"
 
 
 def show():
