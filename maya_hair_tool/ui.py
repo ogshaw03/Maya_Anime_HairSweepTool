@@ -73,6 +73,11 @@ class HairBuilderUI(object):
     """
 
     def __init__(self):
+        # Emitted-once tracker so a missing sweepMeshCreator attribute
+        # (Maya-version rename etc.) is warned about the first time a
+        # slider tries to touch it, not every drag frame.
+        self._warned_missing_attrs = set()
+
         # Curve panel widgets (create-a-curve shortcuts).
         self.curve_length = None
         self.curve_cv_count = None
@@ -330,14 +335,39 @@ class HairBuilderUI(object):
             finally:
                 cmds.undoInfo(stateWithoutFlush=prev)
 
+    def _warn_missing(self, attr):
+        """Print a Script Editor warning at most once per session per
+        missing attribute — the drag path calls setters dozens of times
+        per second, so an unconditional warning would flood the log."""
+        if attr in self._warned_missing_attrs:
+            return
+        self._warned_missing_attrs.add(attr)
+        cmds.warning(
+            "[maya_hair_tool] sweepMeshCreator に {0!r} 属性が"
+            "見つかりません。Maya バージョンで attribute 名が異なる"
+            "可能性があります (このメッセージはセッション中 1 回のみ"
+            "表示)".format(attr))
+
     def _set_uniform_scale(self, value):
         def setter(c):
-            cmds.setAttr(c + ".scaleProfileX", float(value))
-            cmds.setAttr(c + ".scaleProfileY", float(value))
+            # Guard each attribute individually — some Maya versions
+            # rename or omit one of the scale scalars, and the previous
+            # unguarded pattern would raise on the missing one and
+            # abort the whole setter (leaving the other attribute
+            # un-set too).
+            v = float(value)
+            for attr in ("scaleProfileX", "scaleProfileY"):
+                if cmds.attributeQuery(attr, node=c, exists=True):
+                    cmds.setAttr(c + "." + attr, v)
+                else:
+                    self._warn_missing(attr)
         return setter
 
     def _set_attr(self, attr, value, cast=float):
         def setter(c):
+            if not cmds.attributeQuery(attr, node=c, exists=True):
+                self._warn_missing(attr)
+                return
             cmds.setAttr(c + "." + attr, cast(value))
         return setter
 
