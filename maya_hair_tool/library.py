@@ -234,19 +234,9 @@ def _find_model_panel() -> Optional[str]:
 def _snapshot_thumbnail(target_path: str,
                         focus=None, size: int = 128) -> bool:
     """Playblast a single frame showing ONLY ``focus`` and save the
-    result to ``target_path`` (must end in ``.png``). Returns True
-    on success, False on any failure.
-
-    Uses ``cmds.playblast(completeFilename=…)`` so Maya writes the
-    exact filename we want — no frame-number suffix to hunt for
-    afterwards. Falls back to the ``filename``+prefix-search
-    pattern when completeFilename returns without producing the
-    file (some Maya 2023 builds behave that way).
-
-    Isolate flow uses toggle-off/on to clear any prior isolate list,
-    then adds just the focus objects, so the snapshot contains
-    ONLY the target strand — no other scene geometry.
-    """
+    result to ``target_path``. Uses a dedicated temp camera at a
+    consistent 3/4 view angle so every preset thumbnail is framed
+    the same way regardless of the user's viewport state."""
     if cmds is None:
         print("[maya_hair_tool] サムネ生成: cmds が無い (batch mode?)")
         return False
@@ -266,9 +256,39 @@ def _snapshot_thumbnail(target_path: str,
     except Exception:
         prev_iso_state = None
 
+    # Save the panel's current camera so we can restore it after.
+    prev_cam = None
+    try:
+        prev_cam = cmds.modelPanel(panel, query=True, camera=True)
+    except Exception:
+        pass
+
+    temp_cam = None
     target_maya = target_path.replace("\\", "/")
     ok = False
     try:
+        # Dedicated snapshot camera — created fresh each time,
+        # deleted in finally. Consistent 3/4 view angle so every
+        # preset thumbnail looks framed the same way.
+        try:
+            temp_cam_res = cmds.camera(name="__hairThumb_tempCam")
+            temp_cam = temp_cam_res[0]  # transform name
+        except Exception as exc:
+            cmds.warning(
+                "[maya_hair_tool] 一時カメラ作成失敗: "
+                "{0}".format(exc))
+            temp_cam = None
+
+        # Swap the panel to our temp camera so viewFit / playblast
+        # both operate through it (not the user's persp).
+        if temp_cam:
+            try:
+                cmds.lookThru(panel, temp_cam)
+            except Exception as exc:
+                cmds.warning(
+                    "[maya_hair_tool] lookThru 失敗 (続行): "
+                    "{0}".format(exc))
+
         # Isolate: toggle off → on to reset the isolate list,
         # then re-add our focus so the panel shows ONLY it.
         if focus:
@@ -279,6 +299,14 @@ def _snapshot_thumbnail(target_path: str,
                 cmds.select(focus, replace=True)
                 cmds.isolateSelect(panel, addSelected=True)
                 cmds.viewFit(panel, all=False)
+                # Slight tumble for a 3/4 angle. ``viewFit`` frames
+                # selection front-on through our temp cam; a small
+                # orbit gives depth so the strand doesn't look
+                # like a flat silhouette.
+                try:
+                    cmds.tumble(panel, x=-15.0, y=25.0)
+                except Exception:
+                    pass
             except Exception as exc:
                 cmds.warning(
                     "[maya_hair_tool] isolate 失敗 (続行): "
@@ -372,6 +400,19 @@ def _snapshot_thumbnail(target_path: str,
         else:
             print("[maya_hair_tool] サムネ保存: {0}".format(target_path))
     finally:
+        # Restore panel camera BEFORE deleting the temp camera —
+        # deleting the active camera would leave the panel in a
+        # weird state.
+        try:
+            if prev_cam and cmds.objExists(prev_cam):
+                cmds.lookThru(panel, prev_cam)
+        except Exception:
+            pass
+        try:
+            if temp_cam and cmds.objExists(temp_cam):
+                cmds.delete(temp_cam)
+        except Exception:
+            pass
         try:
             if prev_iso_state is not None:
                 cmds.isolateSelect(panel, state=int(prev_iso_state))
@@ -843,6 +884,31 @@ def save_external_to_internal(ma_path: str) -> List[str]:
 # Existing external-library delete
 # --------------------------------------------------------------------------- #
 
+def delete_library_entry_by_path(ma_path: str) -> None:
+    """Delete a preset given its full ``.ma`` path. Also removes the
+    sibling ``.png`` thumbnail. Raises RuntimeError on
+    ``os.remove`` failure (file locked / permission) so the UI can
+    tell the user why the file survived. PNG failure only warns —
+    the .ma being gone is the important part."""
+    if not os.path.isfile(ma_path):
+        return  # already gone
+    try:
+        os.remove(ma_path)
+    except Exception as exc:
+        raise RuntimeError(
+            ".ma 削除失敗 ({0}): {1}".format(ma_path, exc))
+    png_path = os.path.splitext(ma_path)[0] + ".png"
+    if os.path.isfile(png_path):
+        try:
+            os.remove(png_path)
+        except Exception as exc:
+            if cmds is not None:
+                cmds.warning(
+                    "[maya_hair_tool] .png 削除失敗 (Maya が icon "
+                    "ハンドルを保持中の可能性 — 更新押下後に再試行 "
+                    "してください): {0}".format(exc))
+
+
 def delete_library_entry(name: str) -> None:
     """Remove both the ``.ma`` and its ``.png`` for the given preset
     name. Silently no-ops for missing files so double-clicks are
@@ -851,10 +917,6 @@ def delete_library_entry(name: str) -> None:
     safe = _sanitize_name(name)
     if not safe:
         return
-    for ext in (".ma", ".png"):
-        p = os.path.join(root, safe + ext)
-        if os.path.isfile(p):
-            try:
-                os.remove(p)
-            except Exception:
-                pass
+    ma_path = os.path.join(root, safe + ".ma")
+    if os.path.isfile(ma_path):
+        delete_library_entry_by_path(ma_path)

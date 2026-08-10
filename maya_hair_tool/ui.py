@@ -2041,8 +2041,8 @@ class HairBuilderUI(object):
             def _cb_import(_ma=ma_path, *_):
                 self._import_from_library(_ma)
 
-            def _cb_delete(_name=name, *_):
-                self._delete_from_library(_name)
+            def _cb_delete(_name=name, _ma=ma_path, *_):
+                self._delete_from_library(_name, _ma)
 
             btn = cmds.iconTextButton(
                 label=name,
@@ -2229,8 +2229,8 @@ class HairBuilderUI(object):
         result = cmds.confirmDialog(
             title="削除確認",
             message=("内部ライブラリのプリセット '{0}' を削除"
-                     "しますか?\n(シーンから該当ノード群を削除"
-                     "します)".format(name)),
+                     "しますか?\n(シーンから該当ノード群を削除 + "
+                     "UUID キーのサムネ png も削除)".format(name)),
             button=["削除", "キャンセル"],
             defaultButton="キャンセル",
             cancelButton="キャンセル",
@@ -2238,6 +2238,9 @@ class HairBuilderUI(object):
         )
         if result != "削除":
             return
+        # Refresh grid FIRST so Maya's iconTextButton releases the
+        # png file handle before we try to remove it.
+        self._refresh_internal_library_grid()
         try:
             library.delete_internal_library_entry(preset_mesh)
         except Exception as exc:
@@ -2402,7 +2405,7 @@ class HairBuilderUI(object):
             return
         self._regenerate_internal_thumbnail(match[0], name)
 
-    def _delete_from_library(self, name):
+    def _delete_from_library(self, name, ma_path=None):
         # Guard the destructive op behind a confirmation.
         result = cmds.confirmDialog(
             title="削除確認",
@@ -2416,11 +2419,20 @@ class HairBuilderUI(object):
         )
         if result != "削除":
             return
+        # Refresh the grid FIRST so Maya releases the .png icon
+        # file handle — without this, the subsequent os.remove
+        # fails on Windows because iconTextButton is still
+        # holding the file open.
+        self._refresh_library_grid()
         try:
-            library.delete_library_entry(name)
+            if ma_path:
+                library.delete_library_entry_by_path(ma_path)
+            else:
+                library.delete_library_entry(name)
         except Exception as exc:
             cmds.warning(str(exc))
             return
+        # Refresh again so the removed entry drops off the grid.
         self._refresh_library_grid()
 
     # -----------------------------------------------------------------
