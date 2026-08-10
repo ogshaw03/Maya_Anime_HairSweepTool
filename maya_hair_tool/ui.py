@@ -23,6 +23,7 @@ from . import batch
 from . import constants as C
 from . import duplicate
 from . import hair
+from . import library
 from . import sweep_utils as su
 
 
@@ -168,6 +169,10 @@ class HairBuilderUI(object):
         # a redundant rebuild is skipped.
         self._current_profile_key = None
 
+        # Library panel — icon grid rebuilt from library.list_library_entries()
+        self.library_grid = None
+        self.library_frame = None
+
         # Curve panel widgets (create-a-curve shortcuts).
         self.curve_length = None
         self.curve_cv_count = None
@@ -277,6 +282,8 @@ class HairBuilderUI(object):
         self._build_duplicate_panel(right_body)
         cmds.separator(height=8, style="in", parent=right_body)
         self._build_batch_panel(right_body)
+        cmds.separator(height=8, style="in", parent=right_body)
+        self._build_library_panel(right_body)
         cmds.separator(height=8, style="in", parent=right_body)
         self._build_footer(right_body)
 
@@ -1725,6 +1732,177 @@ class HairBuilderUI(object):
                         middle_scale=new_m,
                         tip_scale=new_t,
                     )
+
+    # -----------------------------------------------------------------
+    # Hair library panel (Phase 4)
+    # -----------------------------------------------------------------
+    def _build_library_panel(self, parent):
+        self.library_frame = cmds.frameLayout(
+            label="ヘアライブラリ", collapsable=True, collapse=False,
+            marginHeight=6, marginWidth=6, parent=parent)
+        col = cmds.columnLayout(adjustableColumn=True, rowSpacing=4)
+
+        import os as _os
+        try:
+            root_path = library.library_root()
+        except Exception:
+            root_path = "(unknown)"
+        cmds.text(
+            label=("保存先: {0}\n"
+                   "選択毛束を保存 → 別シーンや他毛束の"
+                   "そばに貼り付け可能。".format(root_path)),
+            align="left", parent=col, font="smallObliqueLabelFont",
+            wordWrap=True,
+        )
+
+        # Icon grid — populated by _refresh_library_grid.
+        self.library_grid = cmds.rowColumnLayout(
+            numberOfColumns=4,
+            columnWidth=[(1, 116), (2, 116), (3, 116), (4, 116)],
+            rowSpacing=(1, 4), columnSpacing=(1, 4),
+            parent=col,
+        )
+
+        row = cmds.rowLayout(
+            numberOfColumns=2, adjustableColumn=1,
+            columnAttach=[(1, "both", 2), (2, "both", 2)],
+            columnWidth2=(200, 80), parent=col,
+        )
+        cmds.button(
+            label="現在の選択をライブラリに保存",
+            annotation=("選択中の毛束 (メッシュ / カーブ / sweep) を"
+                        "1 本、library ディレクトリに .ma として保存します。"
+                        "viewport から playblast でサムネイル (.png) も"
+                        "自動生成します。"),
+            command=self._on_save_to_library, parent=row,
+        )
+        cmds.button(
+            label="更新",
+            annotation=("ライブラリを再スキャンしてグリッドを"
+                        "作り直します。"),
+            command=self._on_refresh_library, parent=row,
+        )
+        cmds.setParent("..")
+
+        self._refresh_library_grid()
+
+    def _refresh_library_grid(self):
+        if not self.library_grid:
+            return
+        try:
+            if not cmds.rowColumnLayout(
+                    self.library_grid, exists=True):
+                return
+        except Exception:
+            return
+
+        # Wipe existing icons.
+        for child in cmds.rowColumnLayout(
+                self.library_grid, query=True, childArray=True) or []:
+            try:
+                cmds.deleteUI(child)
+            except Exception:
+                pass
+
+        entries = library.list_library_entries()
+        if not entries:
+            cmds.text(
+                label="(ライブラリは空です)",
+                parent=self.library_grid,
+                font="smallObliqueLabelFont", align="left")
+            return
+
+        for name, ma_path, png_path in entries:
+            image = png_path if png_path else "pythonFamily.png"
+            # Two closures — one for import (click), one for
+            # delete (right-click). Both need to capture the
+            # loop values as defaults.
+            def _cb_import(_ma=ma_path, *_):
+                self._import_from_library(_ma)
+
+            def _cb_delete(_name=name, *_):
+                self._delete_from_library(_name)
+
+            btn = cmds.iconTextButton(
+                label=name,
+                image=image,
+                width=112, height=132,
+                style="iconAndTextVertical",
+                annotation=("{0} をインポート — 右クリックで"
+                            "メニュー".format(name)),
+                command=_cb_import,
+                parent=self.library_grid,
+            )
+            # Right-click popup for delete.
+            popup = cmds.popupMenu(parent=btn, button=3)
+            cmds.menuItem(
+                label="インポート", command=_cb_import,
+                parent=popup)
+            cmds.menuItem(divider=True, parent=popup)
+            cmds.menuItem(
+                label="ライブラリから削除",
+                command=_cb_delete, parent=popup)
+
+    def _on_save_to_library(self, *_):
+        result = cmds.promptDialog(
+            title="ライブラリに保存",
+            message="プリセット名:",
+            button=["保存", "キャンセル"],
+            defaultButton="保存",
+            cancelButton="キャンセル",
+            dismissString="キャンセル",
+            text="my_hair",
+        )
+        if result != "保存":
+            return
+        name = cmds.promptDialog(query=True, text=True) or ""
+        name = name.strip()
+        if not name:
+            cmds.warning("プリセット名が空です。")
+            return
+        try:
+            ma_path = library.save_hair_to_library(name)
+        except Exception as exc:
+            cmds.warning(str(exc))
+            return
+        cmds.inViewMessage(
+            statusMessage=("ライブラリに保存しました: "
+                            "{0}".format(name)),
+            fade=True, position="topCenter")
+        self._refresh_library_grid()
+
+    def _on_refresh_library(self, *_):
+        self._refresh_library_grid()
+
+    def _import_from_library(self, ma_path):
+        try:
+            library.import_hair_from_library(ma_path)
+        except Exception as exc:
+            cmds.warning(str(exc))
+            return
+        # New strand landed in the scene → refresh both lists.
+        self._refresh_hair_list()
+
+    def _delete_from_library(self, name):
+        # Guard the destructive op behind a confirmation.
+        result = cmds.confirmDialog(
+            title="削除確認",
+            message=("プリセット '{0}' をライブラリから削除"
+                     "しますか?\n(.ma とサムネイル .png "
+                     "両方を消します)".format(name)),
+            button=["削除", "キャンセル"],
+            defaultButton="キャンセル",
+            cancelButton="キャンセル",
+            dismissString="キャンセル",
+        )
+        if result != "削除":
+            return
+        try:
+            library.delete_library_entry(name)
+        except Exception as exc:
+            cmds.warning(str(exc))
+            return
+        self._refresh_library_grid()
 
     # -----------------------------------------------------------------
     # Menu bar handlers
