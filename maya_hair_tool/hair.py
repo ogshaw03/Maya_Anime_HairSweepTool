@@ -339,14 +339,89 @@ def set_group_color(group: str, rgb: tuple, apply_now: bool = True) -> None:
         except Exception:
             pass
     if apply_now:
-        _apply_group_color_to_strands(group, rgb)
+        # Undo any legacy shader-swap so a fresh vertex-color
+        # apply lands on a clean state.
+        for strand in strands_under(group):
+            _legacy_restore_from_shader_swap(strand)
+        _apply_group_color_via_vertex(group, rgb)
 
 
-def _sanitize_shader_name(name: str) -> str:
-    """Reduce a group name to a Maya-safe identifier so we can use
-    it as part of a shader / shadingEngine node name."""
-    import re
-    return re.sub(r"[^A-Za-z0-9_]", "_", name)
+def _apply_group_color_via_vertex(group: str, rgb: tuple) -> int:
+    """Colour every strand in ``group`` by writing per-vertex RGB
+    into a dedicated color set and enabling ``displayColors`` on
+    the mesh shape.
+
+    Non-destructive to shading:
+      * The strand's assigned shading engine is left alone.
+      * Users can edit the actual material via Hypershade at any
+        time; it just isn't shown while ``displayColors=1``.
+      * Toggling colour view OFF is one ``setAttr .displayColors 0``
+        away and the material comes back exactly as it was.
+
+    Returns the number of mesh shapes actually coloured."""
+    if cmds is None:
+        return 0
+    r, g, b = float(rgb[0]), float(rgb[1]), float(rgb[2])
+    count = 0
+    for mesh_xform in strands_under(group):
+        shapes = cmds.listRelatives(
+            mesh_xform, shapes=True, type="mesh",
+            fullPath=True) or []
+        for shape in shapes:
+            try:
+                existing = cmds.polyColorSet(
+                    shape, query=True, allColorSets=True) or []
+                if C.GROUP_COLOR_SET not in existing:
+                    cmds.polyColorSet(
+                        shape, create=True,
+                        colorSet=C.GROUP_COLOR_SET)
+                cmds.polyColorSet(
+                    shape, currentColorSet=True,
+                    colorSet=C.GROUP_COLOR_SET)
+                cmds.polyColorPerVertex(
+                    shape, rgb=[r, g, b], cdo=True)
+                # displayColorChannel selects which colour set the
+                # viewport reads when displayColors is on. Setting
+                # it explicitly makes re-runs deterministic even if
+                # the mesh had another set marked "current" before.
+                try:
+                    cmds.setAttr(
+                        shape + ".displayColorChannel",
+                        C.GROUP_COLOR_SET, type="string")
+                except Exception:
+                    pass
+                cmds.setAttr(shape + ".displayColors", 1)
+                count += 1
+            except Exception as exc:
+                cmds.warning(
+                    "[maya_hair_tool] vertex color 適用失敗 "
+                    "({0}): {1}".format(shape, exc))
+    return count
+
+
+def _legacy_restore_from_shader_swap(mesh_xform: str) -> None:
+    """One-time cleanup for scenes touched by the v0.3.8/9 shader-
+    swap group-colour approach: if the strand is currently on a
+    ``hairGroupMat_*SG`` engine, put its original SG back. Safe
+    to call on strands that were never in shader-swap mode
+    (no-op)."""
+    if cmds is None:
+        return
+    current = _current_sg(mesh_xform)
+    if not current or not current.startswith(
+            C.GROUP_COLOR_MATERIAL_PREFIX):
+        return
+    if not cmds.attributeQuery(
+            C.ORIGINAL_SHADING_GROUP_ATTR,
+            node=mesh_xform, exists=True):
+        return
+    try:
+        saved = cmds.getAttr(
+            mesh_xform + "." + C.ORIGINAL_SHADING_GROUP_ATTR)
+    except Exception:
+        return
+    if saved and cmds.objExists(saved):
+        _assign_sg_to_strand(mesh_xform, saved)
 
 
 def _ensure_group_shader(group: str, rgb: tuple) -> Optional[str]:
@@ -553,46 +628,69 @@ def _restore_original_sg(mesh_xform: str) -> bool:
 
 
 def apply_all_group_colors() -> int:
-    """Walk every group with a stored colour and swap its strands
-    to the group's coloured Lambert. Returns the number of groups
-    processed."""
+    """Walk every group with a stored colour, apply it via the
+    vertex-color set + displayColors path. Also runs a one-time
+    cleanup for any strands still stuck on the legacy
+    ``hairGroupMat_*SG`` swap from v0.3.8/9 (restores their
+    original shading engine before writing vertex colours).
+
+    Returns the number of groups processed."""
     if cmds is None:
         return 0
+    # Legacy cleanup first — restore shader-swapped strands.
+    for strand in all_hair_strands():
+        _legacy_restore_from_shader_swap(strand)
+
     count = 0
     for group in list_hair_groups():
         rgb = get_group_color(group)
         if rgb is None:
             continue
-        _apply_group_color_to_strands(group, rgb)
+        _apply_group_color_via_vertex(group, rgb)
         count += 1
     return count
 
 
 def clear_all_group_colors() -> int:
-    """Restore every strand under HairGroup to its original
-    shading group. Preserves the per-group RGB attributes so
-    re-enabling brings the same colours back.
-
-    Returns the number of strands touched."""
+    """Turn ``displayColors`` OFF on every strand — the actual
+    material assignment reappears in the viewport instantly. The
+    stored vertex colours + per-group RGB attrs stay untouched so
+    re-toggling ON brings the same colours back."""
     if cmds is None:
         return 0
     count = 0
     for strand in all_hair_strands():
-        if _restore_original_sg(strand):
-            count += 1
+        # Also unwind any legacy shader-swap the user may still
+        # have from v0.3.8/9 — otherwise the material wouldn't
+        # actually be visible after "clear".
+        _legacy_restore_from_shader_swap(strand)
+        shapes = cmds.listRelatives(
+            strand, shapes=True, type="mesh", fullPath=True) or []
+        for shape in shapes:
+            try:
+                cmds.setAttr(shape + ".displayColors", 0)
+                count += 1
+            except Exception:
+                pass
     return count
 
 
 def clear_group_color(group: str) -> int:
-    """Restore just the strands under one group to their original
-    shading. Same semantics as ``clear_all_group_colors`` but
-    scoped to a single group."""
+    """Turn ``displayColors`` OFF on every strand in one group.
+    Same semantics as :func:`clear_all_group_colors` but scoped."""
     if cmds is None:
         return 0
     count = 0
     for strand in strands_under(group):
-        if _restore_original_sg(strand):
-            count += 1
+        _legacy_restore_from_shader_swap(strand)
+        shapes = cmds.listRelatives(
+            strand, shapes=True, type="mesh", fullPath=True) or []
+        for shape in shapes:
+            try:
+                cmds.setAttr(shape + ".displayColors", 0)
+                count += 1
+            except Exception:
+                pass
     return count
 
 

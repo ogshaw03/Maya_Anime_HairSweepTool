@@ -64,14 +64,21 @@ INTERNAL_LIBRARY_GROUP = "InLibrary"
 PRESET_TAG_ATTR = "hairLibraryPreset"
 
 # Per-group display colour stored on the group transform as three
-# float attrs (RGB in 0-1). Applied to strands by swapping their
-# shading engine to a lambert of the chosen colour — the drawing-
-# override path used up through v0.3.7 only recolored wireframes.
-# Toggling material ↔ group-colour view is a shader-swap, and the
-# strand's ORIGINAL shading group is stashed in
-# ``ORIGINAL_SHADING_GROUP_ATTR`` so it can be restored later.
+# float attrs (RGB in 0-1). Applied to strands via a dedicated
+# vertex-colour set (``GROUP_COLOR_SET``) + ``displayColors=1`` on
+# the mesh shape. The mesh's actual shading assignment is never
+# touched — the toggle just flips ``displayColors`` on/off so the
+# user can freely edit the real material at any time.
+#
+# The v0.3.7 (drawing-override) and v0.3.8/9 (shader-swap)
+# approaches are dropped: the former only recoloured wireframes,
+# the latter interfered with material editing. The two obsolete
+# constants (GROUP_COLOR_MATERIAL_PREFIX / ORIGINAL_SHADING_GROUP_
+# ATTR) are kept for one release so the cleanup pass in
+# hair.py can restore any strands users still have swapped.
 GROUP_COLOR_R_ATTR = "hairGroupColorR"
 GROUP_COLOR_G_ATTR = "hairGroupColorG"
 GROUP_COLOR_B_ATTR = "hairGroupColorB"
-GROUP_COLOR_MATERIAL_PREFIX = "hairGroupMat_"
-ORIGINAL_SHADING_GROUP_ATTR = "hairOriginalSG"
+GROUP_COLOR_SET = "hairGroupColorSet"
+GROUP_COLOR_MATERIAL_PREFIX = "hairGroupMat_"   # legacy (v0.3.8/9)
+ORIGINAL_SHADING_GROUP_ATTR = "hairOriginalSG"  # legacy (v0.3.8/9)
