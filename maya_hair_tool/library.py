@@ -859,26 +859,49 @@ def delete_internal_library_entry_nodes(preset_mesh: str) -> str:
     couldn't be resolved). Callers should refresh the icon grid,
     then call ``delete_internal_library_thumb(path)`` if the returned
     path is non-empty."""
+    print("[maya_hair_tool DEL-lib] entry preset={0!r}".format(
+        preset_mesh))
     if cmds is None:
+        print("[maya_hair_tool DEL-lib] cmds is None — abort")
         return ""
     if not cmds.objExists(preset_mesh):
-        return ""
+        # Try to salvage — maybe the caller passed a short name that
+        # matches multiple nodes; look under InLibrary specifically.
+        short = preset_mesh.split("|")[-1]
+        candidates = cmds.ls(
+            "|" + C.INTERNAL_LIBRARY_GROUP + "|" + short,
+            long=True) or []
+        print("[maya_hair_tool DEL-lib] not exists — recovery"
+              " candidates={0}".format(candidates))
+        if len(candidates) == 1:
+            preset_mesh = candidates[0]
+        else:
+            print("[maya_hair_tool DEL-lib] cannot resolve — abort")
+            return ""
     # Resolve UUID-keyed thumbnail path FIRST — after the node is
     # gone the lookup would fail.
     thumb = internal_thumb_path(preset_mesh) or ""
+    print("[maya_hair_tool DEL-lib] thumb resolved={0!r}".format(thumb))
     creators = su.sweep_creators_from_nodes([preset_mesh])
+    print("[maya_hair_tool DEL-lib] creators={0}".format(creators))
     to_delete = [preset_mesh]
     for c in creators:
         curve = su.curve_from_creator(c)
         if curve and cmds.objExists(curve):
             to_delete.append(curve)
+    print("[maya_hair_tool DEL-lib] to_delete={0}".format(to_delete))
     errors = []
     for n in to_delete:
         if not cmds.objExists(n):
+            print("[maya_hair_tool DEL-lib] skip (already gone): "
+                  "{0}".format(n))
             continue
         try:
             cmds.delete(n)
+            print("[maya_hair_tool DEL-lib] deleted: {0}".format(n))
         except Exception as exc:
+            print("[maya_hair_tool DEL-lib] delete FAILED {0}: "
+                  "{1}".format(n, exc))
             errors.append("{0}: {1}".format(n, exc))
     if errors:
         cmds.warning(

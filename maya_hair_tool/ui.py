@@ -2338,6 +2338,13 @@ class HairBuilderUI(object):
         self._refresh_hair_list()
 
     def _delete_internal_entry(self, preset_mesh, name):
+        # Diagnostic prints — turn v0.3.15's silent-fail into a
+        # loud trail in the Script Editor so we can see exactly
+        # which stage drops out.
+        print("[maya_hair_tool DEL] click name={0!r} path={1!r}".format(
+            name, preset_mesh))
+        print("[maya_hair_tool DEL] objExists(preset_mesh)={0}".format(
+            cmds.objExists(preset_mesh)))
         result = cmds.confirmDialog(
             title="削除確認",
             message=("内部ライブラリのプリセット '{0}' を削除"
@@ -2348,15 +2355,22 @@ class HairBuilderUI(object):
             cancelButton="キャンセル",
             dismissString="キャンセル",
         )
+        print("[maya_hair_tool DEL] dialog result={0!r}".format(result))
         if result != "削除":
+            print("[maya_hair_tool DEL] cancelled — no delete")
             return
         # 1. Delete the scene nodes and capture the thumbnail path.
         try:
             thumb = library.delete_internal_library_entry_nodes(
                 preset_mesh)
         except Exception as exc:
+            print("[maya_hair_tool DEL] nodes step raised: "
+                  "{0}".format(exc))
             cmds.warning(str(exc))
             return
+        print("[maya_hair_tool DEL] nodes step OK thumb={0!r} "
+              "objExists(mesh)={1}".format(
+                  thumb, cmds.objExists(preset_mesh)))
         # 2. Refresh the grid — the doomed preset drops off the list
         #    and its iconTextButton is destroyed, releasing the png
         #    file handle Maya was holding on Windows. Wrap in
@@ -2366,14 +2380,20 @@ class HairBuilderUI(object):
         #    are gone).
         try:
             self._refresh_internal_library_grid()
+            print("[maya_hair_tool DEL] grid refresh OK")
         except Exception as exc:
+            print("[maya_hair_tool DEL] grid refresh raised: "
+                  "{0}".format(exc))
             cmds.warning(
                 "[maya_hair_tool] grid 更新失敗 (削除は続行): "
                 "{0}".format(exc))
         finally:
             try:
                 library.delete_internal_library_thumb(thumb)
+                print("[maya_hair_tool DEL] png step done")
             except Exception as exc:
+                print("[maya_hair_tool DEL] png step raised: "
+                      "{0}".format(exc))
                 cmds.warning(str(exc))
 
     def _export_internal_to_external(self, preset_mesh, default_name):
