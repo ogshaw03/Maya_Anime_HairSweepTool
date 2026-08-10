@@ -2150,10 +2150,10 @@ class HairBuilderUI(object):
             # Two closures — one for import (click), one for
             # delete (right-click). Both need to capture the
             # loop values as defaults.
-            def _cb_import(_ma=ma_path, *_):
+            def _cb_import(*_, _ma=ma_path):
                 self._import_from_library(_ma)
 
-            def _cb_delete(_name=name, _ma=ma_path, *_):
+            def _cb_delete(*_, _name=name, _ma=ma_path):
                 self._delete_from_library(_name, _ma)
 
             btn = cmds.iconTextButton(
@@ -2166,10 +2166,10 @@ class HairBuilderUI(object):
                 command=_cb_import,
                 parent=self.library_grid,
             )
-            def _cb_copy_to_internal(_ma=ma_path, *_):
+            def _cb_copy_to_internal(*_, _ma=ma_path):
                 self._copy_external_to_internal(_ma)
 
-            def _cb_regen(_name=name, *_):
+            def _cb_regen(*_, _name=name):
                 self._regenerate_external_thumbnail(_name)
 
             # Right-click popup for delete / copy-to-internal.
@@ -2258,16 +2258,24 @@ class HairBuilderUI(object):
             return
 
         for name, preset_mesh, thumb_path in entries:
-            def _cb_import(_m=preset_mesh, *_):
+            # NOTE the awkward ``*_, key=default`` signature: Maya's
+            # ``menuItem`` (and some iconTextButton) callbacks pass a
+            # leading positional bool ("menu check state"). The
+            # previous ``_m=preset_mesh, *_`` order let that True
+            # overwrite ``_m`` on menu clicks, so every popup menu
+            # action ran against ``_m=True`` — the object-does-not-
+            # exist path in every helper triggered silent no-op.
+            # Keyword-only defaults keep the closure capture intact.
+            def _cb_import(*_, _m=preset_mesh):
                 self._import_from_internal_library(_m)
 
-            def _cb_delete(_m=preset_mesh, _n=name, *_):
+            def _cb_delete(*_, _m=preset_mesh, _n=name):
                 self._delete_internal_entry(_m, _n)
 
-            def _cb_export(_m=preset_mesh, _n=name, *_):
+            def _cb_export(*_, _m=preset_mesh, _n=name):
                 self._export_internal_to_external(_m, _n)
 
-            def _cb_regen(_m=preset_mesh, _n=name, *_):
+            def _cb_regen(*_, _m=preset_mesh, _n=name):
                 self._regenerate_internal_thumbnail(_m, _n)
 
             if thumb_path:
@@ -2338,13 +2346,6 @@ class HairBuilderUI(object):
         self._refresh_hair_list()
 
     def _delete_internal_entry(self, preset_mesh, name):
-        # Diagnostic prints — turn v0.3.15's silent-fail into a
-        # loud trail in the Script Editor so we can see exactly
-        # which stage drops out.
-        print("[maya_hair_tool DEL] click name={0!r} path={1!r}".format(
-            name, preset_mesh))
-        print("[maya_hair_tool DEL] objExists(preset_mesh)={0}".format(
-            cmds.objExists(preset_mesh)))
         result = cmds.confirmDialog(
             title="削除確認",
             message=("内部ライブラリのプリセット '{0}' を削除"
@@ -2355,22 +2356,15 @@ class HairBuilderUI(object):
             cancelButton="キャンセル",
             dismissString="キャンセル",
         )
-        print("[maya_hair_tool DEL] dialog result={0!r}".format(result))
         if result != "削除":
-            print("[maya_hair_tool DEL] cancelled — no delete")
             return
         # 1. Delete the scene nodes and capture the thumbnail path.
         try:
             thumb = library.delete_internal_library_entry_nodes(
                 preset_mesh)
         except Exception as exc:
-            print("[maya_hair_tool DEL] nodes step raised: "
-                  "{0}".format(exc))
             cmds.warning(str(exc))
             return
-        print("[maya_hair_tool DEL] nodes step OK thumb={0!r} "
-              "objExists(mesh)={1}".format(
-                  thumb, cmds.objExists(preset_mesh)))
         # 2. Refresh the grid — the doomed preset drops off the list
         #    and its iconTextButton is destroyed, releasing the png
         #    file handle Maya was holding on Windows. Wrap in
@@ -2380,20 +2374,14 @@ class HairBuilderUI(object):
         #    are gone).
         try:
             self._refresh_internal_library_grid()
-            print("[maya_hair_tool DEL] grid refresh OK")
         except Exception as exc:
-            print("[maya_hair_tool DEL] grid refresh raised: "
-                  "{0}".format(exc))
             cmds.warning(
                 "[maya_hair_tool] grid 更新失敗 (削除は続行): "
                 "{0}".format(exc))
         finally:
             try:
                 library.delete_internal_library_thumb(thumb)
-                print("[maya_hair_tool DEL] png step done")
             except Exception as exc:
-                print("[maya_hair_tool DEL] png step raised: "
-                      "{0}".format(exc))
                 cmds.warning(str(exc))
 
     def _export_internal_to_external(self, preset_mesh, default_name):
