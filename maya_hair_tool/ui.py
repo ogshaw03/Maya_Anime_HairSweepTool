@@ -133,6 +133,11 @@ class HairBuilderUI(object):
 
         # Hair list panel widget + scriptJob id for cleanup.
         self.hair_list = None
+        # Colour-mode radio (マテリアル / グループ色) at the top of
+        # the hair list panel. Toggling it mirrors what the Edit
+        # menu's 「グループ色表示 ON」/「マテリアル表示に戻す」
+        # entries do.
+        self.color_mode_toggle = None
         self._script_jobs = []
 
         # Taper curve editor widget + re-entrancy guard so the two
@@ -373,6 +378,28 @@ class HairBuilderUI(object):
 
         inner = cmds.formLayout(parent=frame)
 
+        # Colour-mode switch — placed at the top of the panel so
+        # it's always visible whatever else is happening in the
+        # tree / library area.
+        self.color_mode_toggle = cmds.radioButtonGrp(
+            numberOfRadioButtons=2,
+            label="表示:",
+            labelArray2=("マテリアル", "グループ色"),
+            select=1,
+            columnAlign3=("left", "left", "left"),
+            columnWidth3=(40, 90, 90),
+            onCommand1=(
+                lambda *_: self._on_color_mode_toggle_material()),
+            onCommand2=(
+                lambda *_: self._on_color_mode_toggle_group()),
+            annotation=(
+                "マテリアル: 元マテリアルで shaded 表示。\n"
+                "グループ色: 各グループに設定した色で shaded 表示。\n"
+                "マテリアルは常に無変更 (vertex color + "
+                "displayColors トグル)。"),
+            parent=inner,
+        )
+
         help_text = cmds.text(
             label=("[全体] → 全毛束、グループ名 → そのグループ、\n"
                    "個別行 → その 1 本を選択します。\n"
@@ -419,7 +446,9 @@ class HairBuilderUI(object):
         cmds.formLayout(
             inner, edit=True,
             attachForm=[
-                (help_text, "top", 4),
+                (self.color_mode_toggle, "top", 4),
+                (self.color_mode_toggle, "left", 4),
+                (self.color_mode_toggle, "right", 4),
                 (help_text, "left", 4),
                 (help_text, "right", 4),
                 (self.hair_list, "left", 4),
@@ -433,6 +462,7 @@ class HairBuilderUI(object):
                 (refresh_btn, "bottom", 4),
             ],
             attachControl=[
+                (help_text, "top", 4, self.color_mode_toggle),
                 (self.hair_list, "top", 4, help_text),
                 (self.hair_list, "bottom", 4, new_group_btn),
                 (new_group_btn, "bottom", 4, move_btn),
@@ -2645,6 +2675,16 @@ class HairBuilderUI(object):
                         widget, edit=True, value=int(default))
                 except Exception:
                     pass
+
+    def _on_color_mode_toggle_material(self, *_):
+        """Radio selected "マテリアル" → same effect as Edit menu's
+        「マテリアル表示に戻す」."""
+        self._on_group_color_hide()
+
+    def _on_color_mode_toggle_group(self, *_):
+        """Radio selected "グループ色" → same effect as Edit menu's
+        「グループ色表示 ON」."""
+        self._on_group_color_show()
 
     def _on_group_color_show(self, *_):
         try:
