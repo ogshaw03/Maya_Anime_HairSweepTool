@@ -45,6 +45,7 @@ except ImportError:  # pragma: no cover — allow import outside Maya
     cmds = None
 
 from . import constants as C
+from . import duplicate
 from . import hair
 from . import sweep_utils as su
 
@@ -346,6 +347,285 @@ def _unique_namespace(base: str) -> str:
 
 # --------------------------------------------------------------------------- #
 # Delete
+# --------------------------------------------------------------------------- #
+
+# --------------------------------------------------------------------------- #
+# Internal (scene-embedded) library
+# --------------------------------------------------------------------------- #
+
+def ensure_internal_library_group() -> str:
+    """Return the InLibrary transform (creating it hidden at scene
+    root on first call). Placed as a *sibling* of HairGroup rather
+    than a child, so every strand-enumeration helper in hair.py
+    (which walks HairGroup's subtree) naturally excludes preset
+    strands stored here."""
+    if cmds is None:
+        raise RuntimeError("requires Maya")
+    if cmds.objExists(C.INTERNAL_LIBRARY_GROUP):
+        return C.INTERNAL_LIBRARY_GROUP
+    grp = cmds.group(
+        empty=True, name=C.INTERNAL_LIBRARY_GROUP, world=True)
+    try:
+        cmds.setAttr(grp + ".visibility", 0)
+    except Exception:
+        pass
+    return grp
+
+
+def _tag_as_preset(creator: str) -> None:
+    """Add / lock the ``hairLibraryPreset`` bool attribute on the
+    sweepMeshCreator so we can distinguish presets from live
+    strands programmatically."""
+    if not cmds.attributeQuery(
+            C.PRESET_TAG_ATTR, node=creator, exists=True):
+        try:
+            cmds.addAttr(
+                creator, longName=C.PRESET_TAG_ATTR,
+                attributeType="bool", defaultValue=True)
+            cmds.setAttr(
+                creator + "." + C.PRESET_TAG_ATTR, True, lock=True)
+        except Exception:
+            pass
+
+
+def _untag_preset(creator: str) -> None:
+    """Remove the preset tag — used when a preset is imported back
+    out of InLibrary and becomes a normal live strand."""
+    if cmds.attributeQuery(
+            C.PRESET_TAG_ATTR, node=creator, exists=True):
+        try:
+            cmds.setAttr(
+                creator + "." + C.PRESET_TAG_ATTR, lock=False)
+            cmds.deleteAttr(creator + "." + C.PRESET_TAG_ATTR)
+        except Exception:
+            pass
+
+
+def _move_to_internal_library(mesh_xform: str) -> str:
+    """Reparent a strand mesh transform (and its guide curve) under
+    the InLibrary group. Returns the mesh transform's new full path.
+    """
+    library_grp = ensure_internal_library_group()
+    creators = su.sweep_creators_from_nodes([mesh_xform])
+    creator = creators[0] if creators else None
+
+    # Reparent the mesh transform.
+    try:
+        result = cmds.parent(mesh_xform, library_grp) or []
+        if result:
+            mesh_xform = result[0]
+    except RuntimeError:
+        pass
+
+    # Reparent the associated guide curve so it lives alongside the
+    # preset (keeps the whole strand self-contained within
+    # InLibrary — deleting the group cleans everything up).
+    if creator:
+        curve = su.curve_from_creator(creator)
+        if curve and cmds.objExists(curve):
+            parents = cmds.listRelatives(
+                curve, parent=True, fullPath=True) or []
+            parent_short = (
+                parents[0].split("|")[-1] if parents else "")
+            if parent_short != C.INTERNAL_LIBRARY_GROUP:
+                try:
+                    cmds.parent(curve, library_grp)
+                except RuntimeError:
+                    pass
+        _tag_as_preset(creator)
+    return mesh_xform
+
+
+def save_hair_to_internal(
+    name: Optional[str] = None,
+    creator: Optional[str] = None,
+) -> str:
+    """Duplicate the currently-selected strand (or ``creator``)
+    into the InLibrary group as a reusable preset. Returns the
+    preset's mesh transform path.
+
+    Uses ``duplicate.duplicate_hair`` under the hood so the whole
+    strand — scalar attrs, taperCurve ramp, custom profile curve —
+    is faithfully copied. The copy is then reparented under
+    InLibrary and tagged with ``hairLibraryPreset``."""
+    if cmds is None:
+        raise RuntimeError("save_hair_to_internal requires Maya.")
+
+    if creator is None:
+        creators = su.sweep_creators_from_selection()
+        if not creators:
+            raise RuntimeError(
+                "毛束が選択されていません。カーブ / メッシュ / "
+                "sweepMeshCreator のいずれかを 1 つ選択してください。")
+        if len(creators) > 1:
+            raise RuntimeError(
+                "複数の毛束が選択されています。1 本ずつ保存"
+                "してください。")
+        creator = creators[0]
+
+    new_creators = duplicate.duplicate_hair(
+        [creator], count=1, offset=(0.0, 0.0, 0.0))
+    if not new_creators:
+        raise RuntimeError("プリセットの複製に失敗しました。")
+    new_creator = new_creators[0]
+    new_mesh = su.mesh_from_creator(new_creator)
+    if not new_mesh:
+        raise RuntimeError("複製後のメッシュが見つかりません。")
+
+    new_mesh = _move_to_internal_library(new_mesh)
+
+    # Optional rename so the preset shows up with the user's chosen
+    # label in the internal library grid.
+    safe = _sanitize_name(name) if name else ""
+    if safe:
+        try:
+            new_mesh = cmds.rename(
+                new_mesh, safe + "_preset_mesh")
+        except Exception:
+            pass
+
+    return new_mesh
+
+
+def list_internal_library_entries() -> List[Tuple[str, str]]:
+    """Return ``[(display_name, mesh_transform_path)]`` for every
+    preset stored inside the InLibrary group."""
+    if cmds is None:
+        return []
+    if not cmds.objExists(C.INTERNAL_LIBRARY_GROUP):
+        return []
+    children = cmds.listRelatives(
+        C.INTERNAL_LIBRARY_GROUP, children=True, type="transform",
+        fullPath=True) or []
+    entries = []
+    for c in children:
+        if not hair._is_hair_strand_transform(c):
+            continue
+        short = c.split("|")[-1]
+        # Strip our internal suffix for the button label.
+        display = short
+        for suf in ("_preset_mesh", "_mesh"):
+            if display.endswith(suf):
+                display = display[: -len(suf)]
+                break
+        entries.append((display, c))
+    entries.sort(key=lambda pv: pv[0].lower())
+    return entries
+
+
+def import_from_internal(preset_mesh: str) -> Optional[str]:
+    """Duplicate a preset back out of InLibrary into HairGroup so
+    the user can adjust it as a live strand. Preset stays in place
+    so the same slot can be reused."""
+    if cmds is None:
+        raise RuntimeError("import_from_internal requires Maya.")
+    if not cmds.objExists(preset_mesh):
+        raise RuntimeError(
+            "プリセットが見つかりません: {0}".format(preset_mesh))
+
+    creators = su.sweep_creators_from_nodes([preset_mesh])
+    if not creators:
+        raise RuntimeError(
+            "プリセットの sweepMeshCreator が見つかりません。")
+    creator = creators[0]
+
+    new_creators = duplicate.duplicate_hair(
+        [creator], count=1, offset=(0.0, 0.0, 0.0))
+    if not new_creators:
+        raise RuntimeError("プリセットの展開に失敗しました。")
+    new_creator = new_creators[0]
+    new_mesh = su.mesh_from_creator(new_creator)
+    new_curve = su.curve_from_creator(new_creator)
+
+    # Move to HairGroup and drop the preset tag on the copy so it
+    # behaves like a normal strand from here on out.
+    hair_grp = hair._ensure_hair_group()
+    if new_mesh:
+        try:
+            result = cmds.parent(new_mesh, hair_grp) or []
+            if result:
+                new_mesh = result[0]
+        except RuntimeError:
+            pass
+    if new_curve:
+        parents = cmds.listRelatives(
+            new_curve, parent=True, fullPath=True) or []
+        parent_short = parents[0].split("|")[-1] if parents else ""
+        if parent_short != C.HAIR_GROUP_NAME:
+            try:
+                cmds.parent(new_curve, hair_grp)
+            except RuntimeError:
+                pass
+    _untag_preset(new_creator)
+    if new_mesh:
+        try:
+            cmds.select(new_mesh, replace=True)
+        except Exception:
+            pass
+    return new_mesh
+
+
+def delete_internal_library_entry(preset_mesh: str) -> None:
+    """Remove a preset from InLibrary along with its guide curve.
+    Silently ignores missing nodes so double-clicks are harmless."""
+    if cmds is None:
+        return
+    if not cmds.objExists(preset_mesh):
+        return
+    creators = su.sweep_creators_from_nodes([preset_mesh])
+    to_delete = [preset_mesh]
+    for c in creators:
+        curve = su.curve_from_creator(c)
+        if curve and cmds.objExists(curve):
+            to_delete.append(curve)
+    for n in to_delete:
+        if cmds.objExists(n):
+            try:
+                cmds.delete(n)
+            except Exception:
+                pass
+
+
+def save_external_to_internal(ma_path: str) -> List[str]:
+    """Import an external ``.ma`` preset straight into the InLibrary
+    group and tag every landed strand as a preset. Returns the list
+    of new node paths."""
+    if cmds is None:
+        raise RuntimeError("save_external_to_internal requires Maya.")
+    if not os.path.isfile(ma_path):
+        raise RuntimeError(
+            "ファイルが見つかりません: {0}".format(ma_path))
+    ensure_internal_library_group()
+
+    # Reuse the existing external-import machinery; ``group=`` is
+    # ignored for InLibrary (that group already exists at scene
+    # root, not under HairGroup, so pass None and reparent
+    # manually below).
+    base = os.path.basename(ma_path)[:-3]
+    ns = _unique_namespace("libpreset_" + _sanitize_name(base))
+    try:
+        new_nodes = cmds.file(
+            ma_path, i=True, namespace=ns,
+            ignoreVersion=True, returnNewNodes=True,
+            renameAll=False, preserveReferences=True) or []
+    except Exception as exc:
+        raise RuntimeError("import 失敗: {0}".format(exc))
+
+    for n in list(new_nodes):
+        if not cmds.objExists(n):
+            continue
+        if hair._is_hair_strand_transform(n):
+            try:
+                _move_to_internal_library(n)
+            except Exception as exc:
+                cmds.warning(
+                    "[maya_hair_tool] 内部ライブラリへの移動失敗 "
+                    "({0}): {1}".format(n, exc))
+    return new_nodes
+
+
+# --------------------------------------------------------------------------- #
+# Existing external-library delete
 # --------------------------------------------------------------------------- #
 
 def delete_library_entry(name: str) -> None:

@@ -49,3 +49,16 @@ HAIR_PROFILE_SUFFIX = "_profile"
 # Custom attribute added to the sweepMeshCreator node so the tool can
 # recognise and re-open its own strands later.
 TOOL_TAG_ATTR = "animeHairTool"
+
+# Scene-embedded (internal) library group. Sits at scene root as a
+# sibling of HairGroup and stays hidden so preset strands don't
+# clutter the viewport or the "毛束一覧" tree. Kept separate from
+# HairGroup on purpose — every strand-enumeration helper in hair.py
+# walks HairGroup's subtree, so preset strands stored under
+# InLibrary are naturally filtered out.
+INTERNAL_LIBRARY_GROUP = "InLibrary"
+
+# Boolean attribute added to a sweepMeshCreator when its strand is
+# copied into InLibrary. Marks the strand as "preset material" so
+# tools can distinguish presets from live strands.
+PRESET_TAG_ATTR = "hairLibraryPreset"

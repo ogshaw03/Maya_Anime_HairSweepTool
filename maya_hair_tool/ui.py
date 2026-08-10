@@ -169,9 +169,20 @@ class HairBuilderUI(object):
         # a redundant rebuild is skipped.
         self._current_profile_key = None
 
-        # Library panel — icon grid rebuilt from library.list_library_entries()
-        self.library_grid = None
+        # Library panel — two grids (external / internal) rebuilt
+        # from ``library.list_library_entries`` /
+        # ``library.list_internal_library_entries``. Both are
+        # scrollLayout-backed so the button strip at the bottom
+        # stays pinned when many presets pile up.
+        self.library_tab = None
+        self.library_grid = None            # external library
+        self.internal_library_grid = None   # internal library
         self.library_frame = None
+        # Popup menu attached to the treeView so right-clicking a
+        # hair row surfaces "内部ライブラリに保存" etc. The menu
+        # rebuilds its items on postMenuCommand so options match
+        # the current tree selection.
+        self.hair_list_popup = None
 
         # Curve panel widgets (create-a-curve shortcuts).
         self.curve_length = None
@@ -359,6 +370,13 @@ class HairBuilderUI(object):
             allowReparenting=False,
             selectionChangedCommand=self._on_tree_select,
             parent=inner,
+        )
+        # Right-click popup on the tree — the visible items are
+        # rebuilt on postMenuCommand so options reflect the current
+        # selection (strand → 「内部ライブラリに保存」etc.).
+        self.hair_list_popup = cmds.popupMenu(
+            parent=self.hair_list, button=3,
+            postMenuCommand=self._on_hair_list_menu_build,
         )
 
         # Group management buttons.
@@ -548,6 +566,81 @@ class HairBuilderUI(object):
             cmds.select(targets, replace=True)
         except Exception:
             pass
+
+    def _on_hair_list_menu_build(self, menu_name, *_):
+        """Populate the tree's right-click popup — items depend on
+        what the user has selected in the tree right now."""
+        try:
+            cmds.popupMenu(menu_name, edit=True, deleteAllItems=True)
+        except Exception:
+            return
+        mode, targets = self._resolve_tree_selection()
+        if targets:
+            cmds.menuItem(
+                label="内部ライブラリに保存",
+                command=(lambda *_:
+                    self._on_save_tree_selection_to_internal()),
+                parent=menu_name,
+            )
+            cmds.menuItem(
+                label="外部ライブラリに保存 (.ma)",
+                command=(lambda *_:
+                    self._on_save_tree_selection_to_external()),
+                parent=menu_name,
+            )
+            cmds.menuItem(divider=True, parent=menu_name)
+        cmds.menuItem(
+            label="更新",
+            command=self._on_refresh_hair_list, parent=menu_name)
+
+    def _on_save_tree_selection_to_internal(self):
+        """右クリック → 内部ライブラリに保存. Uses the first strand
+        of the current tree selection so a single-line preset is
+        made regardless of whether the user picked a group or an
+        individual leaf."""
+        mode, targets = self._resolve_tree_selection()
+        if not targets:
+            cmds.warning("毛束が選択されていません。")
+            return
+        # ツリー選択 → シーン選択を先に同期しておく (save_hair_to_internal
+        # は sweep_creators_from_selection() を使う)
+        try:
+            cmds.select(targets[0], replace=True)
+        except Exception:
+            pass
+        result = cmds.promptDialog(
+            title="内部ライブラリに保存",
+            message="プリセット名:",
+            button=["保存", "キャンセル"],
+            defaultButton="保存", cancelButton="キャンセル",
+            dismissString="キャンセル",
+            text=targets[0].split("|")[-1].replace("_mesh", ""),
+        )
+        if result != "保存":
+            return
+        name = (cmds.promptDialog(query=True, text=True) or "").strip()
+        if not name:
+            return
+        try:
+            library.save_hair_to_internal(name=name)
+        except Exception as exc:
+            cmds.warning(str(exc))
+            return
+        cmds.inViewMessage(
+            statusMessage=("内部ライブラリに保存: {0}".format(name)),
+            fade=True, position="topCenter")
+        self._refresh_internal_library_grid()
+
+    def _on_save_tree_selection_to_external(self):
+        mode, targets = self._resolve_tree_selection()
+        if not targets:
+            cmds.warning("毛束が選択されていません。")
+            return
+        try:
+            cmds.select(targets[0], replace=True)
+        except Exception:
+            pass
+        self._on_save_to_library()
 
     def _on_new_group(self, *_):
         result = cmds.promptDialog(
@@ -1744,10 +1837,10 @@ class HairBuilderUI(object):
     # -----------------------------------------------------------------
     def _build_library_panel(self, parent):
         """``parent`` is expected to be a formLayout so the frame
-        stretches to fill the left pane's bottom half. Layout mirrors
-        Substance Painter's shelf: a header, a scrollable icon grid
-        that grows / shrinks with the pane, then a two-button strip
-        pinned to the bottom."""
+        stretches to fill the left pane's bottom half. The panel
+        holds a tabLayout with two icon-grid tabs (外部 / 内部) —
+        one for on-disk ``.ma`` presets, one for scene-embedded
+        InLibrary presets."""
         self.library_frame = cmds.frameLayout(
             label="ヘアライブラリ", collapsable=False,
             marginHeight=4, marginWidth=4, parent=parent)
@@ -1761,54 +1854,99 @@ class HairBuilderUI(object):
             ],
         )
 
-        inner = cmds.formLayout(parent=self.library_frame)
-
-        try:
-            root_path = library.library_root()
-        except Exception:
-            root_path = "(unknown)"
-        header = cmds.text(
-            label=("保存先: {0}".format(root_path)),
-            align="left", font="smallObliqueLabelFont",
-            wordWrap=True, parent=inner,
+        # tabLayout containing two form-attached pages — one per
+        # library kind. Both pages share the same layout skeleton
+        # (header, scroll+grid, button strip).
+        self.library_tab = cmds.tabLayout(
+            innerMarginWidth=2, innerMarginHeight=2,
+            parent=self.library_frame,
+        )
+        ext_page = self._build_library_tab_page(
+            self.library_tab, kind="external")
+        int_page = self._build_library_tab_page(
+            self.library_tab, kind="internal")
+        cmds.tabLayout(
+            self.library_tab, edit=True,
+            tabLabel=[(ext_page, "外部 (.ma)"),
+                      (int_page, "内部 (シーン)")],
         )
 
-        # Scrollable icon grid so N presets scroll instead of pushing
-        # the buttons off screen.
+        self._refresh_library_grid()
+        self._refresh_internal_library_grid()
+
+    def _build_library_tab_page(self, tab_parent, kind):
+        """Build one tab page for either ``kind='external'`` or
+        ``kind='internal'`` and return its form layout id."""
+        form = cmds.formLayout(parent=tab_parent)
+
+        # Header text — path for external, group name for internal.
+        if kind == "external":
+            try:
+                root_path = library.library_root()
+            except Exception:
+                root_path = "(unknown)"
+            header_text = "保存先: {0}".format(root_path)
+        else:
+            header_text = ("シーン内 {0} グループに保存 "
+                           "(非表示 / 保存ファイルに埋め込まれる)"
+                           .format(C.INTERNAL_LIBRARY_GROUP))
+        header = cmds.text(
+            label=header_text,
+            align="left", font="smallObliqueLabelFont",
+            wordWrap=True, parent=form,
+        )
+
         grid_scroll = cmds.scrollLayout(
             horizontalScrollBarThickness=0,
             childResizable=True,
-            parent=inner,
+            parent=form,
         )
-        self.library_grid = cmds.rowColumnLayout(
+        grid = cmds.rowColumnLayout(
             numberOfColumns=2,
             columnWidth=[(1, 90), (2, 90)],
             rowSpacing=(1, 4), columnSpacing=(1, 4),
             parent=grid_scroll,
         )
+        if kind == "external":
+            self.library_grid = grid
+        else:
+            self.internal_library_grid = grid
 
-        # Save / refresh strip pinned to the bottom.
         btn_row = cmds.rowLayout(
             numberOfColumns=2, adjustableColumn=1,
             columnAttach=[(1, "both", 2), (2, "both", 2)],
-            columnWidth2=(140, 50), parent=inner,
+            columnWidth2=(140, 50), parent=form,
         )
-        cmds.button(
-            label="選択毛束を保存",
-            annotation=("選択中の毛束 (メッシュ / カーブ / sweep) を"
-                        "1 本、library ディレクトリに .ma として保存し、"
-                        "playblast でサムネイル (.png) を生成します。"),
-            command=self._on_save_to_library, parent=btn_row,
-        )
-        cmds.button(
-            label="更新",
-            annotation="ライブラリを再スキャンしてグリッドを作り直します。",
-            command=self._on_refresh_library, parent=btn_row,
-        )
+        if kind == "external":
+            cmds.button(
+                label="選択毛束を保存",
+                annotation=("選択中の毛束を library ディレクトリに "
+                            ".ma として保存 + playblast サムネイル生成。"),
+                command=self._on_save_to_library, parent=btn_row,
+            )
+            cmds.button(
+                label="更新",
+                annotation="外部ライブラリを再スキャンします。",
+                command=self._on_refresh_library, parent=btn_row,
+            )
+        else:
+            cmds.button(
+                label="選択毛束を内部に保存",
+                annotation=("選択中の毛束を InLibrary グループに複製 "
+                            "+ hairLibraryPreset タグ付け。"),
+                command=self._on_save_to_internal_library,
+                parent=btn_row,
+            )
+            cmds.button(
+                label="更新",
+                annotation="内部ライブラリを再スキャンします。",
+                command=self._on_refresh_internal_library,
+                parent=btn_row,
+            )
         cmds.setParent("..")
 
         cmds.formLayout(
-            inner, edit=True,
+            form, edit=True,
             attachForm=[
                 (header, "top", 4),
                 (header, "left", 4),
@@ -1824,8 +1962,7 @@ class HairBuilderUI(object):
                 (grid_scroll, "bottom", 4, btn_row),
             ],
         )
-
-        self._refresh_library_grid()
+        return form
 
     def _refresh_library_grid(self):
         if not self.library_grid:
@@ -1874,14 +2011,20 @@ class HairBuilderUI(object):
                 command=_cb_import,
                 parent=self.library_grid,
             )
-            # Right-click popup for delete.
+            def _cb_copy_to_internal(_ma=ma_path, *_):
+                self._copy_external_to_internal(_ma)
+
+            # Right-click popup for delete / copy-to-internal.
             popup = cmds.popupMenu(parent=btn, button=3)
             cmds.menuItem(
-                label="インポート", command=_cb_import,
+                label="インポート (シーンへ)", command=_cb_import,
                 parent=popup)
+            cmds.menuItem(
+                label="内部ライブラリにコピー",
+                command=_cb_copy_to_internal, parent=popup)
             cmds.menuItem(divider=True, parent=popup)
             cmds.menuItem(
-                label="ライブラリから削除",
+                label="外部ライブラリから削除",
                 command=_cb_delete, parent=popup)
 
     def _on_save_to_library(self, *_):
@@ -1923,6 +2066,171 @@ class HairBuilderUI(object):
             return
         # New strand landed in the scene → refresh both lists.
         self._refresh_hair_list()
+
+    # --------------------------------------------------------------
+    # Internal (scene-embedded) library
+    # --------------------------------------------------------------
+    def _refresh_internal_library_grid(self):
+        if not self.internal_library_grid:
+            return
+        try:
+            if not cmds.rowColumnLayout(
+                    self.internal_library_grid, exists=True):
+                return
+        except Exception:
+            return
+
+        for child in cmds.rowColumnLayout(
+                self.internal_library_grid, query=True,
+                childArray=True) or []:
+            try:
+                cmds.deleteUI(child)
+            except Exception:
+                pass
+
+        entries = library.list_internal_library_entries()
+        if not entries:
+            cmds.text(
+                label="(内部ライブラリは空です)",
+                parent=self.internal_library_grid,
+                font="smallObliqueLabelFont", align="left")
+            return
+
+        for name, preset_mesh in entries:
+            def _cb_import(_m=preset_mesh, *_):
+                self._import_from_internal_library(_m)
+
+            def _cb_delete(_m=preset_mesh, _n=name, *_):
+                self._delete_internal_entry(_m, _n)
+
+            def _cb_export(_m=preset_mesh, _n=name, *_):
+                self._export_internal_to_external(_m, _n)
+
+            btn = cmds.iconTextButton(
+                label=name,
+                image="pythonFamily.png",
+                width=86, height=106,
+                style="iconAndTextVertical",
+                annotation=("{0} をシーンにインポート — 右クリックで"
+                            "メニュー".format(name)),
+                command=_cb_import,
+                parent=self.internal_library_grid,
+            )
+            popup = cmds.popupMenu(parent=btn, button=3)
+            cmds.menuItem(
+                label="インポート (シーンへ)", command=_cb_import,
+                parent=popup)
+            cmds.menuItem(
+                label="外部ライブラリにエクスポート",
+                command=_cb_export, parent=popup)
+            cmds.menuItem(divider=True, parent=popup)
+            cmds.menuItem(
+                label="内部ライブラリから削除",
+                command=_cb_delete, parent=popup)
+
+    def _on_save_to_internal_library(self, *_):
+        result = cmds.promptDialog(
+            title="内部ライブラリに保存",
+            message="プリセット名 (シーン内表示名):",
+            button=["保存", "キャンセル"],
+            defaultButton="保存", cancelButton="キャンセル",
+            dismissString="キャンセル",
+            text="preset",
+        )
+        if result != "保存":
+            return
+        name = (cmds.promptDialog(query=True, text=True) or "").strip()
+        if not name:
+            cmds.warning("プリセット名が空です。")
+            return
+        try:
+            library.save_hair_to_internal(name=name)
+        except Exception as exc:
+            cmds.warning(str(exc))
+            return
+        cmds.inViewMessage(
+            statusMessage=("内部ライブラリに保存しました: "
+                            "{0}".format(name)),
+            fade=True, position="topCenter")
+        self._refresh_internal_library_grid()
+
+    def _on_refresh_internal_library(self, *_):
+        self._refresh_internal_library_grid()
+
+    def _import_from_internal_library(self, preset_mesh):
+        try:
+            library.import_from_internal(preset_mesh)
+        except Exception as exc:
+            cmds.warning(str(exc))
+            return
+        self._refresh_hair_list()
+
+    def _delete_internal_entry(self, preset_mesh, name):
+        result = cmds.confirmDialog(
+            title="削除確認",
+            message=("内部ライブラリのプリセット '{0}' を削除"
+                     "しますか?\n(シーンから該当ノード群を削除"
+                     "します)".format(name)),
+            button=["削除", "キャンセル"],
+            defaultButton="キャンセル",
+            cancelButton="キャンセル",
+            dismissString="キャンセル",
+        )
+        if result != "削除":
+            return
+        try:
+            library.delete_internal_library_entry(preset_mesh)
+        except Exception as exc:
+            cmds.warning(str(exc))
+            return
+        self._refresh_internal_library_grid()
+
+    def _export_internal_to_external(self, preset_mesh, default_name):
+        """内部プリセットを .ma に書き出して外部ライブラリに登録。"""
+        result = cmds.promptDialog(
+            title="外部ライブラリへエクスポート",
+            message="外部ライブラリでのファイル名 (.ma):",
+            button=["エクスポート", "キャンセル"],
+            defaultButton="エクスポート",
+            cancelButton="キャンセル",
+            dismissString="キャンセル",
+            text=default_name,
+        )
+        if result != "エクスポート":
+            return
+        name = (cmds.promptDialog(query=True, text=True) or "").strip()
+        if not name:
+            return
+        creators = su.sweep_creators_from_nodes([preset_mesh])
+        if not creators:
+            cmds.warning("preset の sweep が見つかりません。")
+            return
+        prev_sel = cmds.ls(selection=True, long=True) or []
+        try:
+            cmds.select(preset_mesh, replace=True)
+            library.save_hair_to_library(name)
+        except Exception as exc:
+            cmds.warning(str(exc))
+        finally:
+            try:
+                if prev_sel:
+                    cmds.select(prev_sel, replace=True)
+                else:
+                    cmds.select(clear=True)
+            except Exception:
+                pass
+        self._refresh_library_grid()
+
+    def _copy_external_to_internal(self, ma_path):
+        try:
+            library.save_external_to_internal(ma_path)
+        except Exception as exc:
+            cmds.warning(str(exc))
+            return
+        cmds.inViewMessage(
+            statusMessage="内部ライブラリにコピーしました",
+            fade=True, position="topCenter")
+        self._refresh_internal_library_grid()
 
     def _delete_from_library(self, name):
         # Guard the destructive op behind a confirmation.
