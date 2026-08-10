@@ -396,44 +396,75 @@ def _ensure_group_shader(group: str, rgb: tuple) -> Optional[str]:
     return sg_name
 
 
-def _capture_original_sg(mesh_xform: str) -> Optional[str]:
-    """Remember the strand's current shading group on a string attr
-    of the mesh transform so it can be restored later. Called ONCE
-    per strand — subsequent calls are no-ops so a colour-toggle
-    round-trip doesn't accidentally record the colour SG as the
-    original."""
+def _current_sg(mesh_xform: str) -> Optional[str]:
+    """Return the shading engine currently assigned to the strand's
+    mesh shape, or None."""
     if cmds is None or not cmds.objExists(mesh_xform):
         return None
-    if cmds.attributeQuery(
-            C.ORIGINAL_SHADING_GROUP_ATTR,
-            node=mesh_xform, exists=True):
-        # Already captured — do NOT overwrite (that'd lose the
-        # real original if we're currently in colour-view mode).
-        try:
-            return cmds.getAttr(
-                mesh_xform + "." + C.ORIGINAL_SHADING_GROUP_ATTR)
-        except Exception:
-            return None
-
     shapes = cmds.listRelatives(
         mesh_xform, shapes=True, type="mesh", fullPath=True) or []
     if not shapes:
         return None
     sgs = cmds.listConnections(shapes[0], type="shadingEngine") or []
-    if not sgs:
+    return sgs[0] if sgs else None
+
+
+def _is_group_color_sg(sg_name: str) -> bool:
+    """True when ``sg_name`` looks like one of our
+    ``hairGroupMat_<...>SG`` engines (i.e. an internal colour
+    shader, not a user-assigned material)."""
+    return bool(sg_name) and sg_name.startswith(
+        C.GROUP_COLOR_MATERIAL_PREFIX)
+
+
+def _capture_original_sg(mesh_xform: str) -> Optional[str]:
+    """Remember the strand's current shading group on a string attr
+    of the mesh transform so it can be restored later.
+
+    Called every time we swap into colour-view mode. Unlike the
+    v0.3.8 behaviour (which only captured once), this now updates
+    the stored SG whenever the current assignment is a
+    user-authored material — so re-toggling colour view after the
+    user has changed the material tracks the new choice. When the
+    current SG is one of our own ``hairGroupMat_*SG`` engines the
+    attribute is left alone (that would record the colour SG as
+    the "original" and lose the real one)."""
+    if cmds is None or not cmds.objExists(mesh_xform):
         return None
-    original_sg = sgs[0]
+    current_sg = _current_sg(mesh_xform)
+    if not current_sg:
+        return None
+    if _is_group_color_sg(current_sg):
+        # Already showing group colour; don't overwrite the
+        # previously-recorded true original.
+        if cmds.attributeQuery(
+                C.ORIGINAL_SHADING_GROUP_ATTR,
+                node=mesh_xform, exists=True):
+            try:
+                return cmds.getAttr(
+                    mesh_xform + "." +
+                    C.ORIGINAL_SHADING_GROUP_ATTR)
+            except Exception:
+                pass
+        return None
+
+    if not cmds.attributeQuery(
+            C.ORIGINAL_SHADING_GROUP_ATTR,
+            node=mesh_xform, exists=True):
+        try:
+            cmds.addAttr(
+                mesh_xform,
+                longName=C.ORIGINAL_SHADING_GROUP_ATTR,
+                dataType="string")
+        except Exception:
+            pass
     try:
-        cmds.addAttr(
-            mesh_xform,
-            longName=C.ORIGINAL_SHADING_GROUP_ATTR,
-            dataType="string")
         cmds.setAttr(
             mesh_xform + "." + C.ORIGINAL_SHADING_GROUP_ATTR,
-            original_sg, type="string")
+            current_sg, type="string")
     except Exception:
         pass
-    return original_sg
+    return current_sg
 
 
 def _assign_sg_to_strand(mesh_xform: str, sg: str) -> None:
@@ -461,26 +492,64 @@ def _apply_group_color_to_strands(group: str, rgb: tuple) -> None:
 
 
 def _restore_original_sg(mesh_xform: str) -> bool:
-    """Reassign the strand's stored ``hairOriginalSG`` shading
-    engine. Falls back to ``initialShadingGroup`` if the stored
-    value is missing / points at a deleted SG."""
+    """Restore the strand to its user-authored shading group.
+
+    Handles the three states we can be in when the user hits
+    「マテリアル表示に戻す」:
+
+    * The strand was never touched by group-colour view (no
+      ``hairOriginalSG`` attr, current SG is a user material)
+      — leave it alone, nothing to restore.
+    * The strand is currently on one of our ``hairGroupMat_*SG``
+      engines — assign the stored ``hairOriginalSG`` back.
+    * The strand is currently on a user-authored material
+      (colour view was on, user manually re-assigned) —
+      the user chose that; keep it, but sync the stored SG so
+      the next toggle-on captures the fresh choice.
+    """
     if cmds is None:
         return False
-    target = "initialShadingGroup"
-    if cmds.attributeQuery(
-            C.ORIGINAL_SHADING_GROUP_ATTR,
-            node=mesh_xform, exists=True):
-        try:
-            saved = cmds.getAttr(
-                mesh_xform + "." + C.ORIGINAL_SHADING_GROUP_ATTR)
-        except Exception:
-            saved = None
-        if saved and cmds.objExists(saved):
-            target = saved
-    if not cmds.objExists(target):
+    current_sg = _current_sg(mesh_xform)
+    if not current_sg:
         return False
-    _assign_sg_to_strand(mesh_xform, target)
-    return True
+
+    has_attr = cmds.attributeQuery(
+        C.ORIGINAL_SHADING_GROUP_ATTR,
+        node=mesh_xform, exists=True)
+
+    if _is_group_color_sg(current_sg):
+        # Restore path — reassign the stored original.
+        target = "initialShadingGroup"
+        if has_attr:
+            try:
+                saved = cmds.getAttr(
+                    mesh_xform + "." +
+                    C.ORIGINAL_SHADING_GROUP_ATTR)
+            except Exception:
+                saved = None
+            if saved and cmds.objExists(saved):
+                target = saved
+        if not cmds.objExists(target):
+            return False
+        _assign_sg_to_strand(mesh_xform, target)
+        return True
+
+    # Current SG is user-authored (not one of ours). Two sub-cases:
+    if has_attr:
+        # We had tracked this strand before, but the user re-assigned
+        # while colour view was on. Respect their choice and remember
+        # the new SG as the current "original".
+        try:
+            cmds.setAttr(
+                mesh_xform + "." + C.ORIGINAL_SHADING_GROUP_ATTR,
+                current_sg, type="string")
+        except Exception:
+            pass
+        return True
+
+    # Never touched by us and current SG is a user material —
+    # nothing to do.
+    return False
 
 
 def apply_all_group_colors() -> int:
