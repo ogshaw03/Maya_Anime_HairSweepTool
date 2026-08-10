@@ -133,18 +133,26 @@ class HairBuilderUI(object):
         pane = cmds.paneLayout(configuration="vertical2",
                                paneSize=[1, 30, 100])
 
-        left = cmds.columnLayout(adjustableColumn=True, rowSpacing=4,
-                                 columnAttach=("both", 4), parent=pane)
-        self._build_hair_list_panel(left)
+        # Each pane holds a single stretchy formLayout so the child
+        # widget fills the pane's full height — otherwise a plain
+        # columnLayout would keep its children at their natural size
+        # and leave a gap between the list and the pane's bottom edge.
+        left_form = cmds.formLayout(parent=pane)
+        self._build_hair_list_panel(left_form)
 
-        right = cmds.columnLayout(adjustableColumn=True, rowSpacing=6,
-                                  columnAttach=("both", 6), parent=pane)
-        # The right column is scrollable — with the list on the left
-        # the window is wider, but users on 1080p displays still may
-        # want to shrink the height.
+        right_form = cmds.formLayout(parent=pane)
         right_scroll = cmds.scrollLayout(
             horizontalScrollBarThickness=0,
-            childResizable=True, parent=right)
+            childResizable=True, parent=right_form)
+        cmds.formLayout(
+            right_form, edit=True,
+            attachForm=[
+                (right_scroll, "top", 0),
+                (right_scroll, "bottom", 0),
+                (right_scroll, "left", 0),
+                (right_scroll, "right", 0),
+            ],
+        )
         right_body = cmds.columnLayout(adjustableColumn=True, rowSpacing=6,
                                        columnAttach=("both", 4),
                                        parent=right_scroll)
@@ -180,31 +188,64 @@ class HairBuilderUI(object):
     # Outliner. Populated on show + auto-refreshed via scriptJob.
     # -----------------------------------------------------------------
     def _build_hair_list_panel(self, parent):
-        cmds.frameLayout(label="毛束一覧", collapsable=False,
-                         marginHeight=4, marginWidth=4, parent=parent)
-        col = cmds.columnLayout(adjustableColumn=True, rowSpacing=4)
+        # ``parent`` is expected to be a formLayout so the frame can
+        # stretch to the full pane height. We build the frame + inner
+        # widgets, then wire attachForm on both this-level form and
+        # the inner form so the textScrollList grows / shrinks with
+        # the window.
+        frame = cmds.frameLayout(
+            label="毛束一覧", collapsable=False,
+            marginHeight=4, marginWidth=4, parent=parent)
+        cmds.formLayout(
+            parent, edit=True,
+            attachForm=[
+                (frame, "top", 0),
+                (frame, "bottom", 0),
+                (frame, "left", 0),
+                (frame, "right", 0),
+            ],
+        )
 
-        cmds.text(
+        inner = cmds.formLayout(parent=frame)
+
+        help_text = cmds.text(
             label=("このツールで作った毛束の一覧です。\n"
                    "クリックで選択、Ctrl / Shift クリックで複数選択。\n"
                    "選択すると Create パネルの調整が反映されます。"),
-            align="left", parent=col, font="smallObliqueLabelFont",
-            wordWrap=True,
+            align="left", font="smallObliqueLabelFont",
+            wordWrap=True, parent=inner,
         )
 
         self.hair_list = cmds.textScrollList(
             allowMultiSelection=True,
-            height=520,
             selectCommand=self._on_hair_list_select,
             doubleClickCommand=self._on_hair_list_double_click,
-            parent=col,
+            parent=inner,
         )
 
-        cmds.button(
+        refresh_btn = cmds.button(
             label="更新",
             annotation=("シーン内の毛束を再スキャンしてリストを"
                         "作り直します。"),
-            command=self._on_refresh_hair_list, parent=col,
+            command=self._on_refresh_hair_list, parent=inner,
+        )
+
+        cmds.formLayout(
+            inner, edit=True,
+            attachForm=[
+                (help_text, "top", 4),
+                (help_text, "left", 4),
+                (help_text, "right", 4),
+                (self.hair_list, "left", 4),
+                (self.hair_list, "right", 4),
+                (refresh_btn, "left", 4),
+                (refresh_btn, "right", 4),
+                (refresh_btn, "bottom", 4),
+            ],
+            attachControl=[
+                (self.hair_list, "top", 4, help_text),
+                (self.hair_list, "bottom", 4, refresh_btn),
+            ],
         )
 
     def _hair_creators_in_scene(self):
