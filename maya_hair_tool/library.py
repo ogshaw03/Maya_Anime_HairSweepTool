@@ -232,25 +232,31 @@ def _find_model_panel() -> Optional[str]:
 
 
 def _snapshot_thumbnail(target_path: str,
-                        focus=None, size: int = 128) -> None:
+                        focus=None, size: int = 128) -> bool:
     """Playblast a single frame showing ONLY ``focus`` and save the
-    result to ``target_path`` (must end in ``.png``).
+    result to ``target_path`` (must end in ``.png``). Returns True
+    on success, False on any failure.
 
-    * Uses ``cmds.isolateSelect`` on the active model panel so the
-      snapshot only shows the requested strand — no other scene
-      geometry, no grid clutter beyond the panel defaults.
-    * Restores the panel's original isolate state + the user's
-      original scene selection in ``finally`` so a failure never
-      leaves the viewport locked to "isolate mode".
-    * Silently returns when there's no model panel (batch mode) —
-      the .ma preset is still valid, just without a preview.
+    Uses ``cmds.playblast(completeFilename=…)`` so Maya writes the
+    exact filename we want — no frame-number suffix to hunt for
+    afterwards. Falls back to the ``filename``+prefix-search
+    pattern when completeFilename returns without producing the
+    file (some Maya 2023 builds behave that way).
+
+    Isolate flow uses toggle-off/on to clear any prior isolate list,
+    then adds just the focus objects, so the snapshot contains
+    ONLY the target strand — no other scene geometry.
     """
     if cmds is None:
-        return
+        print("[maya_hair_tool] サムネ生成: cmds が無い (batch mode?)")
+        return False
 
     panel = _find_model_panel()
     if not panel:
-        return  # No viewport → nothing to snapshot.
+        cmds.warning(
+            "[maya_hair_tool] サムネ生成: model panel が見つかりません "
+            "(viewport が閉じている / batch mode)")
+        return False
 
     prev_sel = cmds.ls(selection=True, long=True) or []
     prev_iso_state = None
@@ -260,98 +266,112 @@ def _snapshot_thumbnail(target_path: str,
     except Exception:
         prev_iso_state = None
 
+    target_maya = target_path.replace("\\", "/")
+    ok = False
     try:
-        # Isolate: turn iso ON, empty its list, add just our focus,
-        # frame it. The three-step sequence (state=1 → addSelected)
-        # is the standard pattern Maya's own AE uses.
+        # Isolate: toggle off → on to reset the isolate list,
+        # then re-add our focus so the panel shows ONLY it.
         if focus:
             try:
                 cmds.select(focus, replace=True)
-            except Exception:
-                pass
-        try:
-            cmds.isolateSelect(panel, state=1)
-            cmds.isolateSelect(panel, removeSelected=True)
-            if focus:
+                cmds.isolateSelect(panel, state=0)
+                cmds.isolateSelect(panel, state=1)
                 cmds.select(focus, replace=True)
                 cmds.isolateSelect(panel, addSelected=True)
-            cmds.viewFit(panel, all=False)
-        except Exception as exc:
-            cmds.warning(
-                "[maya_hair_tool] isolate 設定失敗 (サムネ生成"
-                "続行): {0}".format(exc))
-
-        # ``filename`` for playblast is a base — Maya appends
-        # ``.<frame>.<ext>`` where <ext> depends on ``compression``.
-        # We give it a distinctive tmp base so we can find the
-        # resulting file next to target_path.
-        target_dir = os.path.dirname(target_path) or "."
-        base_no_ext = os.path.splitext(target_path)[0]
-        tmp_base = base_no_ext + "__thumb_tmp"
+                cmds.viewFit(panel, all=False)
+            except Exception as exc:
+                cmds.warning(
+                    "[maya_hair_tool] isolate 失敗 (続行): "
+                    "{0}".format(exc))
 
         try:
             cur_frame = cmds.currentTime(query=True)
         except Exception:
             cur_frame = 1
 
-        # Snapshot files that already match the pattern so we don't
-        # trip over stale leftovers on failure.
-        tmp_basename = os.path.basename(tmp_base)
+        # Preferred path — completeFilename writes to exactly the
+        # given path (no frame padding appended). Available in Maya
+        # 2016+ so guaranteed on 2023.
+        result = None
         try:
-            before = set(f for f in os.listdir(target_dir)
-                         if f.startswith(tmp_basename))
-        except Exception:
-            before = set()
-
-        try:
-            cmds.playblast(
+            result = cmds.playblast(
                 format="image",
-                filename=tmp_base.replace("\\", "/"),
+                completeFilename=target_maya,
                 widthHeight=[size, size],
                 percent=100,
                 frame=[cur_frame],
                 viewer=False,
                 forceOverwrite=True,
-                compression="png",
                 showOrnaments=False,
-                framePadding=1,
             )
         except Exception as exc:
             cmds.warning(
-                "[maya_hair_tool] playblast 失敗: {0}".format(exc))
-            return
+                "[maya_hair_tool] playblast (completeFilename) "
+                "例外: {0}".format(exc))
+            result = None
 
-        # Rename Maya's output (whatever extension it wrote) to
-        # target_path so the icon-grid finds it.
-        try:
-            after = set(f for f in os.listdir(target_dir)
-                        if f.startswith(tmp_basename))
-        except Exception:
-            after = set()
-        produced = sorted(after - before)
-        if not produced:
-            # Fall back to anything matching the prefix.
-            produced = sorted(after)
-        for f in produced:
-            src = os.path.join(target_dir, f)
+        if os.path.isfile(target_path) and os.path.getsize(target_path) > 0:
+            ok = True
+        else:
+            # Fallback: use ``filename`` + suffix hunt.
+            target_dir = os.path.dirname(target_path) or "."
+            base_no_ext = os.path.splitext(target_path)[0]
+            tmp_base = base_no_ext + "__thumb_tmp"
+            tmp_basename = os.path.basename(tmp_base)
             try:
-                if os.path.isfile(target_path):
-                    os.remove(target_path)
-                os.rename(src, target_path)
-                break
+                before = set(f for f in os.listdir(target_dir)
+                             if f.startswith(tmp_basename))
             except Exception:
-                continue
-
-        # Clean up any stray tmp files.
-        for f in list(os.listdir(target_dir)):
-            if f.startswith(tmp_basename):
+                before = set()
+            try:
+                cmds.playblast(
+                    format="image",
+                    filename=tmp_base.replace("\\", "/"),
+                    widthHeight=[size, size],
+                    percent=100,
+                    frame=[cur_frame],
+                    viewer=False,
+                    forceOverwrite=True,
+                    compression="png",
+                    showOrnaments=False,
+                    framePadding=1,
+                )
+            except Exception as exc:
+                cmds.warning(
+                    "[maya_hair_tool] playblast (filename) "
+                    "例外: {0}".format(exc))
+            try:
+                after = set(f for f in os.listdir(target_dir)
+                            if f.startswith(tmp_basename))
+            except Exception:
+                after = set()
+            produced = sorted(after - before) or sorted(after)
+            for f in produced:
+                src = os.path.join(target_dir, f)
                 try:
-                    os.remove(os.path.join(target_dir, f))
+                    if os.path.isfile(target_path):
+                        os.remove(target_path)
+                    os.rename(src, target_path)
+                    ok = True
+                    break
                 except Exception:
-                    pass
+                    continue
+            for f in list(os.listdir(target_dir)):
+                if f.startswith(tmp_basename):
+                    try:
+                        os.remove(os.path.join(target_dir, f))
+                    except Exception:
+                        pass
+
+        if not ok:
+            cmds.warning(
+                "[maya_hair_tool] サムネイル未生成: "
+                "target={0} (result={1!r}). Script Editor で "
+                "playblast の詳細エラーを確認してください。".format(
+                    target_path, result))
+        else:
+            print("[maya_hair_tool] サムネ保存: {0}".format(target_path))
     finally:
-        # Restore isolate + selection so the user's viewport looks
-        # untouched after the save.
         try:
             if prev_iso_state is not None:
                 cmds.isolateSelect(panel, state=int(prev_iso_state))
@@ -364,6 +384,7 @@ def _snapshot_thumbnail(target_path: str,
                 cmds.select(clear=True)
         except Exception:
             pass
+    return ok
 
 
 def regenerate_thumbnail(name: str, size: int = 128) -> bool:
@@ -547,9 +568,56 @@ def _move_to_internal_library(mesh_xform: str) -> str:
     return mesh_xform
 
 
+def internal_thumbs_dir() -> str:
+    """Directory that holds internal-preset thumbnails, keyed by
+    the preset mesh's Maya UUID. Nested under the external library
+    root so both live in the same overall folder."""
+    d = os.path.join(library_root(), "_internal_thumbs")
+    if not os.path.isdir(d):
+        try:
+            os.makedirs(d)
+        except Exception:
+            pass
+    return d
+
+
+def internal_thumb_path(preset_mesh: str) -> Optional[str]:
+    """Return the thumbnail path for a specific internal preset.
+    Keyed by the mesh transform's Maya UUID so renames + scene
+    reloads don't break the association. Returns None if UUID
+    can't be resolved (very rare)."""
+    if cmds is None or not cmds.objExists(preset_mesh):
+        return None
+    try:
+        uuids = cmds.ls(preset_mesh, uuid=True) or []
+    except Exception:
+        return None
+    if not uuids:
+        return None
+    # Sanitise defensively — Maya UUIDs are alphanumeric + hyphens
+    # only, but a stray colon would break Windows paths.
+    safe_uuid = re.sub(r"[^A-Za-z0-9_-]", "_", uuids[0])
+    return os.path.join(internal_thumbs_dir(), safe_uuid + ".png")
+
+
+def regenerate_internal_thumbnail(preset_mesh: str,
+                                    focus: Optional[list] = None) -> bool:
+    """Re-generate an internal preset's thumbnail. If ``focus`` is
+    given it's used as the snapshot subject (the user can point at
+    a different strand to serve as the visual). Otherwise falls
+    back to the preset mesh itself."""
+    thumb = internal_thumb_path(preset_mesh)
+    if not thumb:
+        return False
+    if focus is None:
+        focus = [preset_mesh]
+    return _snapshot_thumbnail(thumb, focus=focus)
+
+
 def save_hair_to_internal(
     name: Optional[str] = None,
     creator: Optional[str] = None,
+    thumbnail: bool = True,
 ) -> str:
     """Duplicate the currently-selected strand (or ``creator``)
     into the InLibrary group as a reusable preset. Returns the
@@ -595,12 +663,27 @@ def save_hair_to_internal(
         except Exception:
             pass
 
+    # UUID-keyed thumbnail alongside the preset. Best-effort — if
+    # playblast fails the .ma is still saved and the icon just
+    # falls back to the generic Maya icon.
+    if thumbnail:
+        thumb = internal_thumb_path(new_mesh)
+        if thumb:
+            try:
+                _snapshot_thumbnail(thumb, focus=[new_mesh])
+            except Exception as exc:
+                cmds.warning(
+                    "[maya_hair_tool] 内部プリセット サムネ生成失敗: "
+                    "{0}".format(exc))
+
     return new_mesh
 
 
-def list_internal_library_entries() -> List[Tuple[str, str]]:
-    """Return ``[(display_name, mesh_transform_path)]`` for every
-    preset stored inside the InLibrary group."""
+def list_internal_library_entries() -> List[Tuple[str, str, str]]:
+    """Return ``[(display_name, mesh_transform_path, thumb_path)]``
+    for every preset stored inside the InLibrary group.
+    ``thumb_path`` is an empty string when the UUID-keyed
+    thumbnail file doesn't exist yet."""
     if cmds is None:
         return []
     if not cmds.objExists(C.INTERNAL_LIBRARY_GROUP):
@@ -613,13 +696,15 @@ def list_internal_library_entries() -> List[Tuple[str, str]]:
         if not hair._is_hair_strand_transform(c):
             continue
         short = c.split("|")[-1]
-        # Strip our internal suffix for the button label.
         display = short
         for suf in ("_preset_mesh", "_mesh"):
             if display.endswith(suf):
                 display = display[: -len(suf)]
                 break
-        entries.append((display, c))
+        thumb = internal_thumb_path(c) or ""
+        if thumb and not os.path.isfile(thumb):
+            thumb = ""
+        entries.append((display, c, thumb))
     entries.sort(key=lambda pv: pv[0].lower())
     return entries
 
@@ -677,12 +762,16 @@ def import_from_internal(preset_mesh: str) -> Optional[str]:
 
 
 def delete_internal_library_entry(preset_mesh: str) -> None:
-    """Remove a preset from InLibrary along with its guide curve.
-    Silently ignores missing nodes so double-clicks are harmless."""
+    """Remove a preset from InLibrary along with its guide curve
+    and its UUID-keyed thumbnail file. Silently ignores missing
+    nodes so double-clicks are harmless."""
     if cmds is None:
         return
     if not cmds.objExists(preset_mesh):
         return
+    # Grab thumbnail path BEFORE we delete the node (afterwards
+    # the UUID lookup would fail).
+    thumb = internal_thumb_path(preset_mesh)
     creators = su.sweep_creators_from_nodes([preset_mesh])
     to_delete = [preset_mesh]
     for c in creators:
@@ -695,6 +784,11 @@ def delete_internal_library_entry(preset_mesh: str) -> None:
                 cmds.delete(n)
             except Exception:
                 pass
+    if thumb and os.path.isfile(thumb):
+        try:
+            os.remove(thumb)
+        except Exception:
+            pass
 
 
 def save_external_to_internal(ma_path: str) -> List[str]:
@@ -722,16 +816,26 @@ def save_external_to_internal(ma_path: str) -> List[str]:
     except Exception as exc:
         raise RuntimeError("import 失敗: {0}".format(exc))
 
+    landed_strands = []
     for n in list(new_nodes):
         if not cmds.objExists(n):
             continue
         if hair._is_hair_strand_transform(n):
             try:
-                _move_to_internal_library(n)
+                landed = _move_to_internal_library(n)
+                landed_strands.append(landed)
             except Exception as exc:
                 cmds.warning(
                     "[maya_hair_tool] 内部ライブラリへの移動失敗 "
                     "({0}): {1}".format(n, exc))
+    # Generate thumbnails for the fresh presets.
+    for strand in landed_strands:
+        thumb = internal_thumb_path(strand)
+        if thumb:
+            try:
+                _snapshot_thumbnail(thumb, focus=[strand])
+            except Exception:
+                pass
     return new_nodes
 
 

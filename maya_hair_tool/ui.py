@@ -1912,24 +1912,40 @@ class HairBuilderUI(object):
         else:
             self.internal_library_grid = grid
 
-        btn_row = cmds.rowLayout(
-            numberOfColumns=2, adjustableColumn=1,
-            columnAttach=[(1, "both", 2), (2, "both", 2)],
-            columnWidth2=(140, 50), parent=form,
-        )
         if kind == "external":
+            btn_row = cmds.rowLayout(
+                numberOfColumns=3, adjustableColumn=1,
+                columnAttach=[(1, "both", 2), (2, "both", 2),
+                              (3, "both", 2)],
+                columnWidth3=(90, 90, 50), parent=form,
+            )
             cmds.button(
                 label="選択毛束を保存",
                 annotation=("選択中の毛束を library ディレクトリに "
-                            ".ma として保存 + playblast サムネイル生成。"),
+                            ".ma として保存 + playblast サムネ生成。"),
                 command=self._on_save_to_library, parent=btn_row,
+            )
+            cmds.button(
+                label="サムネ再生成 …",
+                annotation=("既存プリセットのサムネイル再生成。"
+                            "選択毛束をソースに、ダイアログで対象"
+                            "プリセット名を指定します。"),
+                command=self._on_regen_thumbnail_prompt,
+                parent=btn_row,
             )
             cmds.button(
                 label="更新",
                 annotation="外部ライブラリを再スキャンします。",
                 command=self._on_refresh_library, parent=btn_row,
             )
+            cmds.setParent("..")
         else:
+            btn_row = cmds.rowLayout(
+                numberOfColumns=3, adjustableColumn=1,
+                columnAttach=[(1, "both", 2), (2, "both", 2),
+                              (3, "both", 2)],
+                columnWidth3=(90, 90, 50), parent=form,
+            )
             cmds.button(
                 label="選択毛束を内部に保存",
                 annotation=("選択中の毛束を InLibrary グループに複製 "
@@ -1938,12 +1954,20 @@ class HairBuilderUI(object):
                 parent=btn_row,
             )
             cmds.button(
+                label="サムネ再生成 …",
+                annotation=("内部プリセットのサムネイル再生成。"
+                            "選択毛束をソースに、ダイアログで対象"
+                            "プリセット名を指定します。"),
+                command=self._on_regen_internal_thumb_prompt,
+                parent=btn_row,
+            )
+            cmds.button(
                 label="更新",
                 annotation="内部ライブラリを再スキャンします。",
                 command=self._on_refresh_internal_library,
                 parent=btn_row,
             )
-        cmds.setParent("..")
+            cmds.setParent("..")
 
         cmds.formLayout(
             form, edit=True,
@@ -1991,7 +2015,13 @@ class HairBuilderUI(object):
             return
 
         for name, ma_path, png_path in entries:
-            image = png_path if png_path else "pythonFamily.png"
+            # Maya's iconTextButton accepts absolute image paths
+            # but is happier with forward slashes than the
+            # backslashes ``os.path.join`` hands us on Windows.
+            if png_path:
+                image = png_path.replace("\\", "/")
+            else:
+                image = "pythonFamily.png"
             # Two closures — one for import (click), one for
             # delete (right-click). Both need to capture the
             # loop values as defaults.
@@ -2102,7 +2132,7 @@ class HairBuilderUI(object):
                 font="smallObliqueLabelFont", align="left")
             return
 
-        for name, preset_mesh in entries:
+        for name, preset_mesh, thumb_path in entries:
             def _cb_import(_m=preset_mesh, *_):
                 self._import_from_internal_library(_m)
 
@@ -2112,9 +2142,17 @@ class HairBuilderUI(object):
             def _cb_export(_m=preset_mesh, _n=name, *_):
                 self._export_internal_to_external(_m, _n)
 
+            def _cb_regen(_m=preset_mesh, _n=name, *_):
+                self._regenerate_internal_thumbnail(_m, _n)
+
+            if thumb_path:
+                image = thumb_path.replace("\\", "/")
+            else:
+                image = "pythonFamily.png"
+
             btn = cmds.iconTextButton(
                 label=name,
-                image="pythonFamily.png",
+                image=image,
                 width=86, height=106,
                 style="iconAndTextVertical",
                 annotation=("{0} をシーンにインポート — 右クリックで"
@@ -2126,6 +2164,9 @@ class HairBuilderUI(object):
             cmds.menuItem(
                 label="インポート (シーンへ)", command=_cb_import,
                 parent=popup)
+            cmds.menuItem(
+                label="サムネイル再生成 (現在の選択毛束から)",
+                command=_cb_regen, parent=popup)
             cmds.menuItem(
                 label="外部ライブラリにエクスポート",
                 command=_cb_export, parent=popup)
@@ -2260,6 +2301,93 @@ class HairBuilderUI(object):
         else:
             cmds.warning("サムネイル生成に失敗しました。")
         self._refresh_library_grid()
+
+    def _on_regen_thumbnail_prompt(self, *_):
+        """Top-level 「サムネ再生成…」button in the external tab.
+        Prompts the user to pick which preset name to update, then
+        snapshots the current selection into that preset's .png."""
+        entries = library.list_library_entries()
+        if not entries:
+            cmds.warning("外部ライブラリにプリセットがありません。")
+            return
+        names = [e[0] for e in entries]
+        creators = su.sweep_creators_from_selection()
+        if not creators:
+            cmds.warning(
+                "サムネの元にする毛束を先に選択してください。")
+            return
+        hint = ", ".join(names[:5])
+        result = cmds.promptDialog(
+            title="サムネ再生成",
+            message="対象プリセット名 (候補: {0}):".format(hint),
+            button=["再生成", "キャンセル"],
+            defaultButton="再生成", cancelButton="キャンセル",
+            dismissString="キャンセル",
+            text=names[0],
+        )
+        if result != "再生成":
+            return
+        name = (cmds.promptDialog(query=True, text=True) or "").strip()
+        if name not in names:
+            cmds.warning(
+                "'{0}' というプリセットが見つかりません。".format(name))
+            return
+        try:
+            ok = library.regenerate_thumbnail(name)
+        except Exception as exc:
+            cmds.warning(str(exc))
+            return
+        if ok:
+            cmds.inViewMessage(
+                statusMessage=("サムネ再生成: {0}".format(name)),
+                fade=True, position="topCenter")
+        else:
+            cmds.warning("サムネイル生成に失敗しました。")
+        self._refresh_library_grid()
+
+    def _regenerate_internal_thumbnail(self, preset_mesh, name):
+        """右クリック → 内部プリセットのサムネイル再生成. Uses the
+        currently-selected strand as visual source (or the preset
+        itself if nothing else is selected)."""
+        focus = cmds.ls(selection=True, long=True) or [preset_mesh]
+        try:
+            ok = library.regenerate_internal_thumbnail(
+                preset_mesh, focus=focus)
+        except Exception as exc:
+            cmds.warning(str(exc))
+            return
+        if ok:
+            cmds.inViewMessage(
+                statusMessage=("内部サムネ再生成: {0}".format(name)),
+                fade=True, position="topCenter")
+        else:
+            cmds.warning("サムネイル生成に失敗しました。")
+        self._refresh_internal_library_grid()
+
+    def _on_regen_internal_thumb_prompt(self, *_):
+        entries = library.list_internal_library_entries()
+        if not entries:
+            cmds.warning("内部ライブラリにプリセットがありません。")
+            return
+        names = [e[0] for e in entries]
+        hint = ", ".join(names[:5])
+        result = cmds.promptDialog(
+            title="内部サムネ再生成",
+            message="対象プリセット名 (候補: {0}):".format(hint),
+            button=["再生成", "キャンセル"],
+            defaultButton="再生成", cancelButton="キャンセル",
+            dismissString="キャンセル",
+            text=names[0],
+        )
+        if result != "再生成":
+            return
+        name = (cmds.promptDialog(query=True, text=True) or "").strip()
+        match = [pm for (n, pm, _t) in entries if n == name]
+        if not match:
+            cmds.warning(
+                "'{0}' というプリセットが見つかりません。".format(name))
+            return
+        self._regenerate_internal_thumbnail(match[0], name)
 
     def _delete_from_library(self, name):
         # Guard the destructive op behind a confirmation.
