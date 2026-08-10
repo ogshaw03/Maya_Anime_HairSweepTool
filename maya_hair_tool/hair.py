@@ -463,6 +463,10 @@ def set_profile(creator: str, profile: str) -> None:
         _safe_set(creator, "profilePolySides", 5)
     elif profile == C.PROFILE_RECTANGLE:
         _safe_set(creator, "sweepProfileType", 1)     # Rounded Rectangle
+    elif profile == C.PROFILE_ARC:
+        _safe_set(creator, "sweepProfileType", 3)     # Arc
+    elif profile == C.PROFILE_WAVE:
+        _safe_set(creator, "sweepProfileType", 4)     # Wave
     elif profile == C.PROFILE_CUSTOM:
         _safe_set(creator, "sweepProfileType", 5)     # Custom
         # User then edits the custom profile curve in the AE.

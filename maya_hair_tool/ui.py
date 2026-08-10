@@ -56,9 +56,53 @@ _PROFILE_DISPLAY = [
     ("リボン (Ribbon)", C.PROFILE_RIBBON),
     ("星 (Star)", C.PROFILE_STAR),
     ("長方形 (Rectangle)", C.PROFILE_RECTANGLE),
+    ("円弧 (Arc)", C.PROFILE_ARC),
+    ("波 (Wave)", C.PROFILE_WAVE),
     ("カスタム (Custom)", C.PROFILE_CUSTOM),
 ]
 _PROFILE_LABEL_TO_KEY = {label: key for label, key in _PROFILE_DISPLAY}
+
+
+# Profile-specific attribute sliders: each entry is
+#   (label, sweepMeshCreator attr, default, slider_min, slider_max, is_int)
+# Sliders are rebuilt when the profile menu changes so users only
+# see knobs that actually do something for the current profile.
+_PROFILE_ATTR_SLIDERS = {
+    C.PROFILE_CIRCLE: [
+        ("側面数 (Sides)", "profilePolySides", 12, 3, 64, True),
+    ],
+    C.PROFILE_ELLIPSE: [
+        ("側面数 (Sides)", "profilePolySides", 12, 3, 64, True),
+    ],
+    C.PROFILE_STAR: [
+        ("星頂点数 (Points)", "profilePolySides", 5, 3, 20, True),
+        ("内側半径 (Sharpness)", "profilePolyInnerRadius",
+         0.5, 0.0, 1.0, False),
+    ],
+    C.PROFILE_RECTANGLE: [
+        ("幅 (Width)", "profileRectWidth", 1.0, 0.01, 5.0, False),
+        ("高さ (Height)", "profileRectHeight", 1.0, 0.01, 5.0, False),
+        ("角丸半径 (Corner)", "profileRectCornerRadius",
+         0.1, 0.0, 1.0, False),
+        ("角丸深さ (Depth)", "profileRectCornerDepth",
+         0.1, 0.0, 1.0, False),
+        ("角丸分割 (Corner Seg)", "profileRectCornerSegments",
+         4, 1, 16, True),
+    ],
+    C.PROFILE_ARC: [
+        ("弧角度 (Angle)", "profileArcAngle", 180.0, 0.0, 360.0, False),
+        ("弧分割 (Segments)", "profileArcSegments", 8, 3, 32, True),
+    ],
+    C.PROFILE_WAVE: [
+        ("振幅 (Amplitude)", "profileWaveAmplitude",
+         0.3, 0.0, 2.0, False),
+        ("周期数 (Cycles)", "profileWaveCycles", 3.0, 0.5, 20.0, False),
+        ("位相 (Offset)", "profileWaveOffset", 0.0, -1.0, 1.0, False),
+        ("波分割 (Segments)", "profileWaveSegments", 16, 4, 64, True),
+    ],
+    C.PROFILE_RIBBON: [],
+    C.PROFILE_CUSTOM: [],
+}
 
 # ─── CUSTOMIZE (must match install.py) ────────────────────────────────────
 _GITHUB_OWNER = "ogshaw03"
@@ -114,6 +158,15 @@ class HairBuilderUI(object):
         # Re-entrancy guard: setting slider values programmatically
         # would otherwise fire drag/change callbacks and re-apply.
         self._syncing_sliders = False
+
+        # Profile-specific slider container + widget map, rebuilt
+        # every time the profile menu changes so users only see the
+        # knobs that actually affect the chosen shape.
+        self.profile_specific_layout = None
+        self.profile_specific_widgets = {}
+        # Track the profile the current slider set was built for so
+        # a redundant rebuild is skipped.
+        self._current_profile_key = None
 
         # Curve panel widgets (create-a-curve shortcuts).
         self.curve_length = None
@@ -610,6 +663,13 @@ class HairBuilderUI(object):
             parent=col, changeCommand=self._cb_profile_change)
         for display, _key in _PROFILE_DISPLAY:
             cmds.menuItem(label=display)
+
+        # Profile-specific slider container. Contents (side counts,
+        # rectangle dims, wave amplitude etc.) are rebuilt on
+        # profile change so only relevant knobs are shown.
+        self.profile_specific_layout = cmds.columnLayout(
+            adjustableColumn=True, rowSpacing=4, parent=col)
+        self._rebuild_profile_specific_sliders(C.PROFILE_CIRCLE)
 
         self.thickness = _slider_with_reset(
             col, "太さ (均一)", C.DEFAULT_THICKNESS, 0.01, 5.0,
@@ -1168,6 +1228,19 @@ class HairBuilderUI(object):
             cmds.setAttr(c + "." + attr, v)
         return setter
 
+    def _set_attr_absolute(self, attr, value, cast=float):
+        """Set an attribute to a literal absolute value regardless of
+        ``_adjust_mode``. Used by profile-specific sliders where a
+        multiplier semantic makes no sense (e.g. "星頂点数 = 5" is a
+        count, not a scale factor; multiplying 12×5 = 60 gives 60
+        sides, not the star with 5 points the user asked for)."""
+        def setter(c):
+            if not cmds.attributeQuery(attr, node=c, exists=True):
+                self._warn_missing(attr)
+                return
+            cmds.setAttr(c + "." + attr, cast(value))
+        return setter
+
     def _set_taper(self, root=None, middle=None, tip=None):
         def setter(c):
             existing = hair.read_taper_values(c)
@@ -1197,9 +1270,113 @@ class HairBuilderUI(object):
         label = cmds.optionMenu(
             self.profile_menu, query=True, value=True)
         key = _PROFILE_LABEL_TO_KEY.get(label, C.PROFILE_CIRCLE)
+        # Swap out the profile-specific slider set so the panel only
+        # exposes knobs that actually affect the chosen shape.
+        self._rebuild_profile_specific_sliders(key)
         def setter(c):
             hair.set_profile(c, key)
         self._live_apply(setter, record_undo=True)
+
+    # -----------------------------------------------------------------
+    # Profile-specific slider set (rebuilt on profile change)
+    # -----------------------------------------------------------------
+    def _rebuild_profile_specific_sliders(self, profile_key):
+        """Tear down and rebuild the ``profile_specific_layout``
+        column with the sliders for ``profile_key`` — every profile
+        has its own attribute list in ``_PROFILE_ATTR_SLIDERS``."""
+        if not self.profile_specific_layout:
+            return
+        try:
+            if not cmds.columnLayout(
+                    self.profile_specific_layout, exists=True):
+                return
+        except Exception:
+            return
+        if self._current_profile_key == profile_key and \
+                self.profile_specific_widgets:
+            # Already built for this profile — nothing to do.
+            return
+
+        # Remove existing children.
+        children = cmds.columnLayout(
+            self.profile_specific_layout, query=True,
+            childArray=True) or []
+        for child in children:
+            try:
+                cmds.deleteUI(child)
+            except Exception:
+                pass
+        self.profile_specific_widgets = {}
+        self._current_profile_key = profile_key
+
+        specs = _PROFILE_ATTR_SLIDERS.get(profile_key, [])
+        if not specs:
+            cmds.text(
+                label="(このプロファイル固有のパラメータはありません)",
+                align="left",
+                parent=self.profile_specific_layout,
+                font="smallObliqueLabelFont",
+            )
+            return
+
+        cmds.text(
+            label="プロファイル固有パラメータ:",
+            align="left",
+            parent=self.profile_specific_layout,
+            font="smallBoldLabelFont",
+        )
+        for label, attr, default, minv, maxv, is_int in specs:
+            drag_cb, change_cb = self._make_profile_attr_callbacks(
+                attr, is_int)
+            if is_int:
+                w = _int_slider_with_reset(
+                    self.profile_specific_layout, label, default,
+                    minv, maxv, drag_cb=drag_cb, change_cb=change_cb)
+            else:
+                w = _slider_with_reset(
+                    self.profile_specific_layout, label, default,
+                    minv, maxv, drag_cb=drag_cb, change_cb=change_cb)
+            self.profile_specific_widgets[attr] = (w, is_int)
+
+    def _make_profile_attr_callbacks(self, attr, is_int):
+        """Build (drag_cb, change_cb) closures for a profile-specific
+        slider. Bound to ``attr`` and reads the slider's current
+        value lazily so the same setter works after a rebuild swaps
+        widget ids."""
+        cast = int if is_int else float
+
+        def _read():
+            wtup = self.profile_specific_widgets.get(attr)
+            if not wtup:
+                return default_of(attr)
+            w, _ = wtup
+            try:
+                if is_int:
+                    return int(cmds.intSliderGrp(
+                        w, query=True, value=True))
+                return float(cmds.floatSliderGrp(
+                    w, query=True, value=True))
+            except Exception:
+                return default_of(attr)
+
+        def default_of(_attr):
+            for k, entries in _PROFILE_ATTR_SLIDERS.items():
+                for spec in entries:
+                    if spec[1] == _attr:
+                        return spec[2]
+            return 0
+
+        def drag_cb(*_):
+            self._live_apply(
+                self._set_attr_absolute(attr, _read(), cast=cast),
+                record_undo=False)
+
+        def change_cb(*_):
+            self._live_apply(
+                self._set_attr_absolute(attr, _read(), cast=cast),
+                record_undo=True)
+
+        return drag_cb, change_cb
 
     # --- Thickness (uniform X = Y) ---
     def _cb_thickness_drag(self, *_):
