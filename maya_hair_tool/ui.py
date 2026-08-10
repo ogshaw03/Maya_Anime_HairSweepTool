@@ -80,6 +80,10 @@ class HairBuilderUI(object):
         # slider tries to touch it, not every drag frame.
         self._warned_missing_attrs = set()
 
+        # Hair list panel widget + scriptJob id for cleanup.
+        self.hair_list = None
+        self._script_jobs = []
+
         # Curve panel widgets (create-a-curve shortcuts).
         self.curve_length = None
         self.curve_cv_count = None
@@ -122,21 +126,172 @@ class HairBuilderUI(object):
 
         title = "{0}  —  v{1}".format(WINDOW_TITLE, __version__)
         cmds.window(WINDOW_NAME, title=title, sizeable=True,
-                    widthHeight=(360, 780))
-        root = cmds.columnLayout(adjustableColumn=True, rowSpacing=6,
-                                 columnAttach=("both", 8))
+                    widthHeight=(560, 780))
 
-        self._build_curve_panel(root)
-        cmds.separator(height=8, style="in")
-        self._build_create_panel(root)
-        cmds.separator(height=8, style="in")
-        self._build_duplicate_panel(root)
-        cmds.separator(height=8, style="in")
-        self._build_batch_panel(root)
-        cmds.separator(height=8, style="in")
-        self._build_footer(root)
+        # Top-level split: left = hair list, right = existing panels.
+        # paneLayout gives the user a draggable divider between them.
+        pane = cmds.paneLayout(configuration="vertical2",
+                               paneSize=[1, 30, 100])
+
+        left = cmds.columnLayout(adjustableColumn=True, rowSpacing=4,
+                                 columnAttach=("both", 4), parent=pane)
+        self._build_hair_list_panel(left)
+
+        right = cmds.columnLayout(adjustableColumn=True, rowSpacing=6,
+                                  columnAttach=("both", 6), parent=pane)
+        # The right column is scrollable — with the list on the left
+        # the window is wider, but users on 1080p displays still may
+        # want to shrink the height.
+        right_scroll = cmds.scrollLayout(
+            horizontalScrollBarThickness=0,
+            childResizable=True, parent=right)
+        right_body = cmds.columnLayout(adjustableColumn=True, rowSpacing=6,
+                                       columnAttach=("both", 4),
+                                       parent=right_scroll)
+
+        self._build_curve_panel(right_body)
+        cmds.separator(height=8, style="in", parent=right_body)
+        self._build_create_panel(right_body)
+        cmds.separator(height=8, style="in", parent=right_body)
+        self._build_duplicate_panel(right_body)
+        cmds.separator(height=8, style="in", parent=right_body)
+        self._build_batch_panel(right_body)
+        cmds.separator(height=8, style="in", parent=right_body)
+        self._build_footer(right_body)
+
+        # scriptJob to auto-refresh the hair list when the scene
+        # changes. Scoped to the window so it dies with it.
+        for evt in ("SceneOpened", "NewSceneOpened",
+                    "DagObjectCreated", "NameChanged"):
+            try:
+                jid = cmds.scriptJob(
+                    parent=WINDOW_NAME, event=[evt, self._refresh_hair_list])
+                self._script_jobs.append(jid)
+            except Exception:
+                pass
 
         cmds.showWindow(WINDOW_NAME)
+        # Populate the list once on show.
+        self._refresh_hair_list()
+
+    # -----------------------------------------------------------------
+    # Hair list panel — enumerate strands tagged animeHairTool so the
+    # user can jump-select from the UI instead of poking at the
+    # Outliner. Populated on show + auto-refreshed via scriptJob.
+    # -----------------------------------------------------------------
+    def _build_hair_list_panel(self, parent):
+        cmds.frameLayout(label="毛束一覧", collapsable=False,
+                         marginHeight=4, marginWidth=4, parent=parent)
+        col = cmds.columnLayout(adjustableColumn=True, rowSpacing=4)
+
+        cmds.text(
+            label=("このツールで作った毛束の一覧です。\n"
+                   "クリックで選択、Ctrl / Shift クリックで複数選択。\n"
+                   "選択すると Create パネルの調整が反映されます。"),
+            align="left", parent=col, font="smallObliqueLabelFont",
+            wordWrap=True,
+        )
+
+        self.hair_list = cmds.textScrollList(
+            allowMultiSelection=True,
+            height=520,
+            selectCommand=self._on_hair_list_select,
+            doubleClickCommand=self._on_hair_list_double_click,
+            parent=col,
+        )
+
+        cmds.button(
+            label="更新",
+            annotation=("シーン内の毛束を再スキャンしてリストを"
+                        "作り直します。"),
+            command=self._on_refresh_hair_list, parent=col,
+        )
+
+    def _hair_creators_in_scene(self):
+        """Return every sweepMeshCreator tagged ``animeHairTool``."""
+        all_creators = cmds.ls(type="sweepMeshCreator") or []
+        return [c for c in all_creators
+                if cmds.attributeQuery(
+                    C.TOOL_TAG_ATTR, node=c, exists=True)]
+
+    def _hair_list_entries(self):
+        """Return ``[(display_name, mesh_transform_path)]`` for the
+        UI list. Falls back to the creator name when a strand has
+        no downstream mesh (shouldn't normally happen)."""
+        entries = []
+        for c in self._hair_creators_in_scene():
+            mesh = su.mesh_from_creator(c)
+            target = mesh if mesh else c
+            display = target.split("|")[-1]
+            entries.append((display, target))
+        entries.sort(key=lambda pv: pv[0].lower())
+        return entries
+
+    def _refresh_hair_list(self, *_):
+        """Repopulate the list widget. Safe to call from scriptJob
+        event handlers — silently no-ops when the widget is gone."""
+        if not self.hair_list:
+            return
+        try:
+            if not cmds.textScrollList(
+                    self.hair_list, exists=True):
+                return
+        except Exception:
+            return
+
+        # Preserve current selection where possible.
+        try:
+            prev_indices = cmds.textScrollList(
+                self.hair_list, query=True, selectIndexedItem=True) or []
+        except Exception:
+            prev_indices = []
+        prev_labels = []
+        try:
+            all_prev = cmds.textScrollList(
+                self.hair_list, query=True, allItems=True) or []
+            for idx in prev_indices:
+                if 1 <= idx <= len(all_prev):
+                    prev_labels.append(all_prev[idx - 1])
+        except Exception:
+            pass
+
+        cmds.textScrollList(self.hair_list, edit=True, removeAll=True)
+        for display, _target in self._hair_list_entries():
+            cmds.textScrollList(self.hair_list, edit=True, append=display)
+
+        # Restore selection by label if the same strand is still there.
+        current = cmds.textScrollList(
+            self.hair_list, query=True, allItems=True) or []
+        for label in prev_labels:
+            if label in current:
+                cmds.textScrollList(
+                    self.hair_list, edit=True, selectItem=label)
+
+    def _on_refresh_hair_list(self, *_):
+        self._refresh_hair_list()
+
+    def _on_hair_list_select(self, *_):
+        """Sync scene selection with the list selection so the
+        live-edit callbacks pick up the newly-highlighted strand(s)."""
+        labels = cmds.textScrollList(
+            self.hair_list, query=True, selectItem=True) or []
+        if not labels:
+            return
+        entries = dict(self._hair_list_entries())
+        targets = [entries[label] for label in labels if label in entries]
+        if targets:
+            try:
+                cmds.select(targets, replace=True)
+            except Exception:
+                pass
+
+    def _on_hair_list_double_click(self, *_):
+        """Double-click focuses the viewport on the selected strand."""
+        self._on_hair_list_select()
+        try:
+            cmds.viewFit(all=False)
+        except Exception:
+            pass
 
     # -----------------------------------------------------------------
     # Curve panel — shortcuts for when the user has no curve yet
@@ -231,43 +386,51 @@ class HairBuilderUI(object):
         for display, _key in _PROFILE_DISPLAY:
             cmds.menuItem(label=display)
 
-        self.thickness = _slider(
+        self.thickness = _slider_with_reset(
             col, "太さ (均一)", C.DEFAULT_THICKNESS, 0.01, 5.0,
             drag_cb=self._cb_thickness_drag,
             change_cb=self._cb_thickness_change)
-        self.width = _slider(
+        self.width = _slider_with_reset(
             col, "幅 (X)", C.DEFAULT_WIDTH, 0.01, 5.0,
             drag_cb=self._cb_width_drag,
             change_cb=self._cb_width_change)
-        self.height = _slider(
+        self.height = _slider_with_reset(
             col, "高さ (Y)", C.DEFAULT_HEIGHT, 0.01, 5.0,
             drag_cb=self._cb_height_drag,
             change_cb=self._cb_height_change)
-        self.root = _slider(
+        self.root = _slider_with_reset(
             col, "根本スケール", C.DEFAULT_ROOT_SCALE, 0.0, 3.0,
             drag_cb=self._cb_root_drag,
             change_cb=self._cb_root_change)
-        self.middle = _slider(
+        self.middle = _slider_with_reset(
             col, "中間スケール", C.DEFAULT_MIDDLE_SCALE, 0.0, 3.0,
             drag_cb=self._cb_middle_drag,
             change_cb=self._cb_middle_change)
-        self.tip = _slider(
+        self.tip = _slider_with_reset(
             col, "先端スケール", C.DEFAULT_TIP_SCALE, 0.0, 3.0,
             drag_cb=self._cb_tip_drag,
             change_cb=self._cb_tip_change)
-        self.twist = _slider(
+        cmds.button(
+            label="テーパーカーブを詳細編集 (AE を開く)",
+            annotation=("選択毛束の sweepMeshCreator を Attribute "
+                        "Editor で開きます。Taper Curve セクションで "
+                        "任意の数のポイントをプロファイル曲線として "
+                        "編集できます。"),
+            command=self._on_open_taper_editor, parent=col,
+        )
+        self.twist = _slider_with_reset(
             col, "ねじれ", C.DEFAULT_TWIST, -720.0, 720.0,
             drag_cb=self._cb_twist_drag,
             change_cb=self._cb_twist_change)
-        self.rotation = _slider(
+        self.rotation = _slider_with_reset(
             col, "回転", C.DEFAULT_ROTATION, -360.0, 360.0,
             drag_cb=self._cb_rotation_drag,
             change_cb=self._cb_rotation_change)
-        self.subdiv_axis = _int_slider(
+        self.subdiv_axis = _int_slider_with_reset(
             col, "断面分割数", C.DEFAULT_SUBDIVISIONS_AXIS, 3, 32,
             drag_cb=self._cb_subdiv_axis_drag,
             change_cb=self._cb_subdiv_axis_change)
-        self.subdiv_length = _int_slider(
+        self.subdiv_length = _int_slider_with_reset(
             col, "長さ分割数", C.DEFAULT_SUBDIVISIONS_LENGTH, 1, 128,
             drag_cb=self._cb_subdiv_length_drag,
             change_cb=self._cb_subdiv_length_change)
@@ -283,6 +446,27 @@ class HairBuilderUI(object):
 
         cmds.button(label="選択カーブから毛束を生成",
                     height=32, command=self._on_create, parent=col)
+
+    def _on_open_taper_editor(self, *_):
+        """Open Maya's Attribute Editor for the selected sweep node
+        so the user can edit ``taperCurve`` (root/middle/tip ramp)
+        with Maya's native ramp widget — arbitrary point count +
+        smooth interpolation."""
+        creators = su.sweep_creators_from_selection()
+        if not creators:
+            cmds.warning(
+                "毛束を選択してからボタンを押してください。")
+            return
+        cmds.select(creators[0], replace=True)
+        try:
+            import maya.mel as mel
+            mel.eval("openAEWindow;")
+        except Exception:
+            try:
+                mel.eval("AttributeEditor;")
+            except Exception as exc:
+                cmds.warning(
+                    "AE を開けませんでした: {0}".format(exc))
 
     def _on_create(self, *_):
         label = cmds.optionMenu(
@@ -301,6 +485,10 @@ class HairBuilderUI(object):
             subdivisions_axis=_read_int(self.subdiv_axis),
             subdivisions_length=_read_int(self.subdiv_length),
         )
+        # Explicit refresh — DagObjectCreated scriptJob usually catches
+        # this too but firing immediately makes the new strand appear
+        # in the list before any DG lag.
+        self._refresh_hair_list()
 
     # -----------------------------------------------------------------
     # Live-edit callbacks (Create panel sliders → selected strands)
@@ -579,6 +767,7 @@ class HairBuilderUI(object):
             cmds.floatFieldGrp(self.dup_offset, query=True, value3=True),
         )
         duplicate.duplicate_hair(creators, count=count, offset=offset)
+        self._refresh_hair_list()
 
     # -----------------------------------------------------------------
     # Batch Edit panel
@@ -596,14 +785,22 @@ class HairBuilderUI(object):
             parent=col,
         )
 
-        self.batch_thickness = _batch_slider(col, "太さ", 1.0, 0.01, 5.0)
-        self.batch_width = _batch_slider(col, "幅", 1.0, 0.01, 5.0)
-        self.batch_height = _batch_slider(col, "高さ", 1.0, 0.01, 5.0)
-        self.batch_root = _batch_slider(col, "根本スケール", 1.0, 0.0, 3.0)
-        self.batch_middle = _batch_slider(col, "中間スケール", 1.0, 0.0, 3.0)
-        self.batch_tip = _batch_slider(col, "先端スケール", 1.0, 0.0, 3.0)
-        self.batch_twist = _batch_slider(col, "ねじれ", 0.0, -720.0, 720.0)
-        self.batch_subdiv = _batch_int_slider(col, "断面分割数", 8, 3, 64)
+        self.batch_thickness = _batch_slider_with_reset(
+            col, "太さ", 1.0, 0.01, 5.0)
+        self.batch_width = _batch_slider_with_reset(
+            col, "幅", 1.0, 0.01, 5.0)
+        self.batch_height = _batch_slider_with_reset(
+            col, "高さ", 1.0, 0.01, 5.0)
+        self.batch_root = _batch_slider_with_reset(
+            col, "根本スケール", 1.0, 0.0, 3.0)
+        self.batch_middle = _batch_slider_with_reset(
+            col, "中間スケール", 1.0, 0.0, 3.0)
+        self.batch_tip = _batch_slider_with_reset(
+            col, "先端スケール", 1.0, 0.0, 3.0)
+        self.batch_twist = _batch_slider_with_reset(
+            col, "ねじれ", 0.0, -720.0, 720.0)
+        self.batch_subdiv = _batch_int_slider_with_reset(
+            col, "断面分割数", 8, 3, 64)
 
         cmds.text(
             label=("スライダーが 1.0 (ねじれは 0.0、断面分割数は既定 8) "
@@ -800,6 +997,77 @@ def _int_slider(parent, label, value, minv, maxv,
     if change_cb is not None:
         kwargs["changeCommand"] = change_cb
     return cmds.intSliderGrp(**kwargs)
+
+
+def _with_reset(parent, factory, default, reset_kind, change_cb=None):
+    """Wrap ``factory(row, ...)`` with a small reset button.
+
+    * ``factory`` is called with a single ``row`` argument and returns the
+      slider widget id.
+    * ``default`` is the value the reset button restores.
+    * ``reset_kind`` is 'float' or 'int' — controls which cmds edit-call
+      is used to set the widget's value.
+    * ``change_cb`` is invoked after reset so live-edit callbacks apply
+      the restored value immediately.
+    """
+    row = cmds.rowLayout(numberOfColumns=2, adjustableColumn=1,
+                         columnWidth2=(300, 26), parent=parent)
+    slider = factory(row)
+
+    def _do_reset(*_):
+        if reset_kind == "int":
+            cmds.intSliderGrp(slider, edit=True, value=int(default))
+        else:
+            cmds.floatSliderGrp(slider, edit=True, value=float(default))
+        if change_cb is not None:
+            try:
+                change_cb()
+            except Exception:
+                pass
+
+    cmds.button(
+        label="↺", width=24, height=22,
+        annotation="初期値 ({0}) にリセット".format(default),
+        command=_do_reset, parent=row,
+    )
+    cmds.setParent("..")
+    return slider
+
+
+def _slider_with_reset(parent, label, default, minv, maxv,
+                        drag_cb=None, change_cb=None,
+                        field_min=-1e6, field_max=1e6):
+    def _factory(row):
+        return _slider(row, label, default, minv, maxv,
+                       field_min=field_min, field_max=field_max,
+                       drag_cb=drag_cb, change_cb=change_cb)
+    return _with_reset(parent, _factory, default, "float", change_cb)
+
+
+def _int_slider_with_reset(parent, label, default, minv, maxv,
+                            drag_cb=None, change_cb=None,
+                            field_min=1, field_max=999):
+    def _factory(row):
+        return _int_slider(row, label, default, minv, maxv,
+                            field_min=field_min, field_max=field_max,
+                            drag_cb=drag_cb, change_cb=change_cb)
+    return _with_reset(parent, _factory, default, "int", change_cb)
+
+
+def _batch_slider_with_reset(parent, label, default, minv, maxv,
+                              drag_cb=None, change_cb=None):
+    def _factory(row):
+        return _batch_slider(row, label, default, minv, maxv,
+                              drag_cb=drag_cb, change_cb=change_cb)
+    return _with_reset(parent, _factory, default, "float", change_cb)
+
+
+def _batch_int_slider_with_reset(parent, label, default, minv, maxv,
+                                  drag_cb=None, change_cb=None):
+    def _factory(row):
+        return _batch_int_slider(row, label, default, minv, maxv,
+                                  drag_cb=drag_cb, change_cb=change_cb)
+    return _with_reset(parent, _factory, default, "int", change_cb)
 
 
 def _batch_slider(parent, label, value, minv, maxv,
