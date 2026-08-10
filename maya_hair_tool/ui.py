@@ -214,8 +214,7 @@ class HairBuilderUI(object):
         # ``parent`` is expected to be a formLayout so the frame can
         # stretch to the full pane height. We build the frame + inner
         # widgets, then wire attachForm on both this-level form and
-        # the inner form so the textScrollList grows / shrinks with
-        # the window.
+        # the inner form so the tree grows / shrinks with the window.
         frame = cmds.frameLayout(
             label="毛束一覧", collapsable=False,
             marginHeight=4, marginWidth=4, parent=parent)
@@ -232,20 +231,34 @@ class HairBuilderUI(object):
         inner = cmds.formLayout(parent=frame)
 
         help_text = cmds.text(
-            label=("このツールで作った毛束の一覧です。\n"
-                   "クリックで選択、Ctrl / Shift クリックで複数選択。\n"
-                   "選択すると Create パネルの調整が反映されます。"),
+            label=("[全体] → 全毛束、グループ名 → そのグループ、\n"
+                   "個別行 → その 1 本を選択します。\n"
+                   "Ctrl/Shift クリックで複数選択も可。"),
             align="left", font="smallObliqueLabelFont",
             wordWrap=True, parent=inner,
         )
 
-        self.hair_list = cmds.textScrollList(
+        self.hair_list = cmds.treeView(
+            numberOfButtons=0,
             allowMultiSelection=True,
-            selectCommand=self._on_hair_list_select,
-            doubleClickCommand=self._on_hair_list_double_click,
+            allowReparenting=False,
+            selectionChangedCommand=self._on_tree_select,
             parent=inner,
         )
 
+        # Group management buttons.
+        new_group_btn = cmds.button(
+            label="新規グループ作成",
+            annotation=("新しい空のグループを HairGroup 直下に"
+                        "作成します。"),
+            command=self._on_new_group, parent=inner,
+        )
+        move_btn = cmds.button(
+            label="選択毛束をグループへ移動",
+            annotation=("シーンで選択中の毛束を、指定した"
+                        "グループへ移動します。"),
+            command=self._on_move_to_group, parent=inner,
+        )
         refresh_btn = cmds.button(
             label="更新",
             annotation=("シーン内の毛束を再スキャンしてリストを"
@@ -261,101 +274,223 @@ class HairBuilderUI(object):
                 (help_text, "right", 4),
                 (self.hair_list, "left", 4),
                 (self.hair_list, "right", 4),
+                (new_group_btn, "left", 4),
+                (new_group_btn, "right", 4),
+                (move_btn, "left", 4),
+                (move_btn, "right", 4),
                 (refresh_btn, "left", 4),
                 (refresh_btn, "right", 4),
                 (refresh_btn, "bottom", 4),
             ],
             attachControl=[
                 (self.hair_list, "top", 4, help_text),
-                (self.hair_list, "bottom", 4, refresh_btn),
+                (self.hair_list, "bottom", 4, new_group_btn),
+                (new_group_btn, "bottom", 4, move_btn),
+                (move_btn, "bottom", 4, refresh_btn),
             ],
         )
 
-    def _hair_creators_in_scene(self):
-        """Return every sweepMeshCreator tagged ``animeHairTool``."""
-        all_creators = cmds.ls(type="sweepMeshCreator") or []
-        return [c for c in all_creators
-                if cmds.attributeQuery(
-                    C.TOOL_TAG_ATTR, node=c, exists=True)]
+    # ---- Tree id encoding --------------------------------------
+    # treeView item names must be unique across the whole tree, so
+    # we encode the tree row's kind + payload into the id:
+    #   "all"                  → 全体 pseudo-item (applies to all strands)
+    #   "grp:<full_path>"      → a hair group (children are strands)
+    #   "str:<full_path>"      → an individual strand mesh transform
+    # The display label shown in the widget is the short (leaf) name.
 
-    def _hair_list_entries(self):
-        """Return ``[(display_name, mesh_transform_path)]`` for the
-        UI list. Falls back to the creator name when a strand has
-        no downstream mesh (shouldn't normally happen)."""
-        entries = []
-        for c in self._hair_creators_in_scene():
-            mesh = su.mesh_from_creator(c)
-            target = mesh if mesh else c
-            display = target.split("|")[-1]
-            entries.append((display, target))
-        entries.sort(key=lambda pv: pv[0].lower())
-        return entries
+    _ALL_ID = "all"
+    _GROUP_PREFIX = "grp:"
+    _STRAND_PREFIX = "str:"
 
     def _refresh_hair_list(self, *_):
-        """Repopulate the list widget. Safe to call from scriptJob
-        event handlers — silently no-ops when the widget is gone."""
+        """Rebuild the tree from HairGroup's children — sections for
+        each named group + a flat list of ungrouped strands, all
+        under a top-level [全体] pseudo-item."""
         if not self.hair_list:
             return
         try:
-            if not cmds.textScrollList(
-                    self.hair_list, exists=True):
+            if not cmds.treeView(self.hair_list, exists=True):
                 return
         except Exception:
             return
 
-        # Preserve current selection where possible.
+        prev_sel = []
         try:
-            prev_indices = cmds.textScrollList(
-                self.hair_list, query=True, selectIndexedItem=True) or []
-        except Exception:
-            prev_indices = []
-        prev_labels = []
-        try:
-            all_prev = cmds.textScrollList(
-                self.hair_list, query=True, allItems=True) or []
-            for idx in prev_indices:
-                if 1 <= idx <= len(all_prev):
-                    prev_labels.append(all_prev[idx - 1])
+            prev_sel = list(cmds.treeView(
+                self.hair_list, query=True, selectItem=True) or [])
         except Exception:
             pass
 
-        cmds.textScrollList(self.hair_list, edit=True, removeAll=True)
-        for display, _target in self._hair_list_entries():
-            cmds.textScrollList(self.hair_list, edit=True, append=display)
+        cmds.treeView(self.hair_list, edit=True, removeAll=True)
 
-        # Restore selection by label if the same strand is still there.
-        current = cmds.textScrollList(
-            self.hair_list, query=True, allItems=True) or []
-        for label in prev_labels:
-            if label in current:
-                cmds.textScrollList(
-                    self.hair_list, edit=True, selectItem=label)
+        # [全体] top-level pseudo-item.
+        cmds.treeView(
+            self.hair_list, edit=True,
+            addItem=(self._ALL_ID, ""))
+        cmds.treeView(
+            self.hair_list, edit=True,
+            displayLabel=(self._ALL_ID, "[全体]"))
+
+        # Named groups + their strands.
+        for group_path in hair.list_hair_groups():
+            gid = self._GROUP_PREFIX + group_path
+            gname = group_path.split("|")[-1]
+            cmds.treeView(
+                self.hair_list, edit=True, addItem=(gid, ""))
+            cmds.treeView(
+                self.hair_list, edit=True,
+                displayLabel=(gid, "▼ " + gname))
+            try:
+                cmds.treeView(
+                    self.hair_list, edit=True, expandItem=(gid, True))
+            except Exception:
+                pass
+            for strand in hair.strands_in_group(group_path):
+                sid = self._STRAND_PREFIX + strand
+                cmds.treeView(
+                    self.hair_list, edit=True, addItem=(sid, gid))
+                cmds.treeView(
+                    self.hair_list, edit=True,
+                    displayLabel=(sid, strand.split("|")[-1]))
+
+        # Ungrouped strands (direct children of HairGroup).
+        for strand in hair.ungrouped_strands():
+            sid = self._STRAND_PREFIX + strand
+            cmds.treeView(
+                self.hair_list, edit=True, addItem=(sid, ""))
+            cmds.treeView(
+                self.hair_list, edit=True,
+                displayLabel=(sid, strand.split("|")[-1]))
+
+        # Restore selection by id.
+        for iid in prev_sel:
+            try:
+                cmds.treeView(
+                    self.hair_list, edit=True, selectItem=(iid, True))
+            except Exception:
+                pass
 
     def _on_refresh_hair_list(self, *_):
         self._refresh_hair_list()
 
-    def _on_hair_list_select(self, *_):
-        """Sync scene selection with the list selection so the
-        live-edit callbacks pick up the newly-highlighted strand(s)."""
-        labels = cmds.textScrollList(
-            self.hair_list, query=True, selectItem=True) or []
-        if not labels:
-            return
-        entries = dict(self._hair_list_entries())
-        targets = [entries[label] for label in labels if label in entries]
-        if targets:
-            try:
-                cmds.select(targets, replace=True)
-            except Exception:
-                pass
+    def _resolve_tree_selection(self):
+        """Turn tree selection into ``(mode, strands)``.
 
-    def _on_hair_list_double_click(self, *_):
-        """Double-click focuses the viewport on the selected strand."""
-        self._on_hair_list_select()
+        mode ∈ {'all', 'group', 'strand'} — the semantic level the
+        user clicked at, so the adjustment layer can decide whether
+        to treat the change as relative (group/all) or absolute
+        (strand)."""
+        sel = cmds.treeView(
+            self.hair_list, query=True, selectItem=True) or []
+        if not sel:
+            return "none", []
+
+        # If ANY tree row is [全体] or a group, treat the whole
+        # selection as "relative multi" and gather every underlying
+        # strand.
+        has_all = False
+        has_group = False
+        strand_ids = []
+        for iid in sel:
+            if iid == self._ALL_ID:
+                has_all = True
+            elif iid.startswith(self._GROUP_PREFIX):
+                has_group = True
+                strand_ids.append(iid)
+            elif iid.startswith(self._STRAND_PREFIX):
+                strand_ids.append(iid)
+
+        targets = []
+        if has_all:
+            targets = hair.all_hair_strands()
+            return "all", targets
+
+        for iid in strand_ids:
+            if iid.startswith(self._GROUP_PREFIX):
+                group_path = iid[len(self._GROUP_PREFIX):]
+                targets.extend(hair.strands_in_group(group_path))
+            elif iid.startswith(self._STRAND_PREFIX):
+                targets.append(iid[len(self._STRAND_PREFIX):])
+        # Dedup while preserving order.
+        seen = set()
+        deduped = []
+        for t in targets:
+            if t not in seen:
+                seen.add(t)
+                deduped.append(t)
+
+        if has_group or len(deduped) > 1:
+            return "group", deduped
+        return "strand", deduped
+
+    def _on_tree_select(self, *_):
+        """Sync scene selection with the tree selection so live-edit
+        callbacks pick up the newly-highlighted strands."""
+        mode, targets = self._resolve_tree_selection()
+        if not targets:
+            return
         try:
-            cmds.viewFit(all=False)
+            cmds.select(targets, replace=True)
         except Exception:
             pass
+
+    def _on_new_group(self, *_):
+        result = cmds.promptDialog(
+            title="新規グループ", message="グループ名:",
+            button=["作成", "キャンセル"], defaultButton="作成",
+            cancelButton="キャンセル", dismissString="キャンセル",
+            text="Bangs",
+        )
+        if result != "作成":
+            return
+        name = cmds.promptDialog(query=True, text=True).strip()
+        if not name:
+            return
+        try:
+            hair.create_hair_group(name)
+        except Exception as exc:
+            cmds.warning(
+                "[maya_hair_tool] グループ作成失敗: {0}".format(exc))
+            return
+        self._refresh_hair_list()
+
+    def _on_move_to_group(self, *_):
+        selection = cmds.ls(selection=True, long=True) or []
+        strands = [n for n in selection
+                   if hair._is_hair_strand_transform(n)]
+        if not strands:
+            cmds.warning(
+                "移動する毛束が選択されていません。"
+                "毛束メッシュを選択してから押してください。")
+            return
+
+        existing = [g.split("|")[-1]
+                     for g in hair.list_hair_groups()]
+        prompt_text = existing[0] if existing else "Bangs"
+        message = ("移動先グループ名 (既存: {0}):".format(
+            ", ".join(existing)) if existing else
+            "新しいグループ名:")
+        result = cmds.promptDialog(
+            title="グループへ移動", message=message,
+            button=["移動", "HairGroup 直下へ", "キャンセル"],
+            defaultButton="移動", cancelButton="キャンセル",
+            dismissString="キャンセル", text=prompt_text,
+        )
+        if result == "キャンセル":
+            return
+        if result == "HairGroup 直下へ":
+            group = None
+        else:
+            group = cmds.promptDialog(query=True, text=True).strip()
+            if not group:
+                return
+        for s in strands:
+            try:
+                hair.move_strand_to_group(s, group)
+            except Exception as exc:
+                cmds.warning(
+                    "[maya_hair_tool] {0} 移動失敗: {1}".format(s, exc))
+        self._refresh_hair_list()
 
     # -----------------------------------------------------------------
     # Curve panel — shortcuts for when the user has no curve yet

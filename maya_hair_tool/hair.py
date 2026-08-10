@@ -208,6 +208,118 @@ def _ensure_hair_group() -> str:
     return C.HAIR_GROUP_NAME
 
 
+# ---------------------------------------------------------------------------
+# Hair group organisation (前髪 / アホ毛 / … と束を分けて調整するため)
+# ---------------------------------------------------------------------------
+
+def _is_hair_strand_transform(node: str) -> bool:
+    """True if ``node`` is a transform whose mesh shape's history
+    includes an animeHairTool-tagged sweepMeshCreator (i.e. one of
+    our strands, not just any random group)."""
+    if not cmds.objExists(node):
+        return False
+    shapes = cmds.listRelatives(
+        node, shapes=True, type="mesh", fullPath=True) or []
+    for shape in shapes:
+        history = cmds.listHistory(shape) or []
+        for h in history:
+            if cmds.nodeType(h) == "sweepMeshCreator" and \
+                    cmds.attributeQuery(
+                        C.TOOL_TAG_ATTR, node=h, exists=True):
+                return True
+    return False
+
+
+def list_hair_groups() -> List[str]:
+    """Return the full DAG paths of every hair group — i.e. every
+    transform child of HairGroup that isn't itself a strand."""
+    if not cmds.objExists(C.HAIR_GROUP_NAME):
+        return []
+    children = cmds.listRelatives(
+        C.HAIR_GROUP_NAME, children=True, type="transform",
+        fullPath=True) or []
+    groups = []
+    for c in children:
+        if _is_hair_strand_transform(c):
+            continue
+        groups.append(c)
+    return groups
+
+
+def create_hair_group(name: str) -> str:
+    """Create an empty hair group under HairGroup (or return an
+    existing one with the same name). Returns the group's full path."""
+    if cmds is None:
+        raise RuntimeError("create_hair_group requires Maya.")
+    parent = _ensure_hair_group()
+    if cmds.objExists(name):
+        parents = cmds.listRelatives(
+            name, parent=True, fullPath=True) or []
+        if parents and parents[0].endswith("|" + C.HAIR_GROUP_NAME):
+            return parents[0] + "|" + name.split("|")[-1]
+    grp = cmds.group(empty=True, name=name, parent=parent)
+    return grp
+
+
+def strands_under(node: str) -> List[str]:
+    """All hair strand transforms beneath ``node`` (any depth)."""
+    if not cmds.objExists(node):
+        return []
+    if _is_hair_strand_transform(node):
+        return [node]
+    all_descendants = cmds.listRelatives(
+        node, allDescendents=True, type="transform",
+        fullPath=True) or []
+    return [d for d in all_descendants
+            if _is_hair_strand_transform(d)]
+
+
+def strands_in_group(group: str) -> List[str]:
+    """Convenience: strands beneath a specific group node."""
+    return strands_under(group)
+
+
+def ungrouped_strands() -> List[str]:
+    """Strand transforms that are direct children of HairGroup
+    (not tucked into a sub-group)."""
+    if not cmds.objExists(C.HAIR_GROUP_NAME):
+        return []
+    children = cmds.listRelatives(
+        C.HAIR_GROUP_NAME, children=True, type="transform",
+        fullPath=True) or []
+    return [c for c in children if _is_hair_strand_transform(c)]
+
+
+def all_hair_strands() -> List[str]:
+    """Every hair strand in the scene, regardless of group."""
+    return strands_under(C.HAIR_GROUP_NAME)
+
+
+def move_strand_to_group(mesh_xform: str, group: Optional[str]) -> str:
+    """Reparent a strand mesh under ``group`` (or under HairGroup
+    directly if ``group`` is None/empty). Creates the group if it
+    doesn't exist yet. Returns the strand's new full path."""
+    if cmds is None:
+        raise RuntimeError("move_strand_to_group requires Maya.")
+    if not cmds.objExists(mesh_xform):
+        return mesh_xform
+    target = _ensure_hair_group()
+    if group:
+        if not cmds.objExists(group):
+            target = create_hair_group(group)
+        else:
+            target = group
+    try:
+        result = cmds.parent(mesh_xform, target) or []
+        if result:
+            return result[0]
+    except RuntimeError as exc:
+        cmds.warning(
+            "[maya_hair_tool] {0} を {1} へ移動できません: {2}".format(
+                mesh_xform, target, exc))
+    return mesh_xform
+
+
 def _unique_hair_name(curve: str) -> str:
     base = curve.split("|")[-1]
     # Strip common curve suffixes so the resulting mesh name reads well.
