@@ -210,7 +210,36 @@ class HairBuilderUI(object):
 
         title = "{0}  —  v{1}".format(WINDOW_TITLE, __version__)
         cmds.window(WINDOW_NAME, title=title, sizeable=True,
-                    widthHeight=(560, 780))
+                    widthHeight=(560, 780), menuBar=True)
+
+        # Menu bar — kept lightweight (Edit + About) so users can
+        # find bulk actions and updates without hunting through the
+        # panels. Additional menus can be added here without touching
+        # the panel layout.
+        edit_menu = cmds.menu(
+            label="Edit", tearOff=True, parent=WINDOW_NAME)
+        cmds.menuItem(
+            label="全スライダーをリセット",
+            annotation=("Create パネルおよび Batch パネルの全"
+                        "スライダーを初期値に戻します。個別絶対"
+                        "モード / 相対乗算モードでは、選択中"
+                        "毛束にもリセット結果が反映されます。"),
+            command=self._on_reset_all_sliders, parent=edit_menu,
+        )
+
+        about_menu = cmds.menu(
+            label="About", tearOff=True, parent=WINDOW_NAME)
+        cmds.menuItem(
+            label="GitHub から更新",
+            annotation=("SHA-pinned raw URL でリポジトリ最新版を"
+                        "取得し、ウィンドウを再オープンします。"),
+            command=update_from_github, parent=about_menu,
+        )
+        cmds.menuItem(divider=True, parent=about_menu)
+        cmds.menuItem(
+            label="バージョン情報",
+            command=self._on_show_version, parent=about_menu,
+        )
 
         # Top-level split: left = hair list, right = existing panels.
         # paneLayout gives the user a draggable divider between them.
@@ -1698,24 +1727,176 @@ class HairBuilderUI(object):
                     )
 
     # -----------------------------------------------------------------
+    # Menu bar handlers
+    # -----------------------------------------------------------------
+    def _on_reset_all_sliders(self, *_):
+        """Reset every Create-panel and Batch-panel slider (including
+        the profile-specific set) to its factory default.
+
+        Each per-slider ↺ button already does this individually; this
+        wraps the whole set into one undo chunk so the user can Ctrl+Z
+        an accidental "全部リセット" in one step. The change callbacks
+        are invoked so the reset applies live to any selected strand
+        (absolute mode → strand's attrs go to defaults; relative mode
+        → each strand goes back to its baseline since multiplier 1.0)."""
+        with batch.batch_undo_chunk("HairResetAllSliders"):
+            # Create panel — float sliders + their change callbacks.
+            for widget, default, change_cb in (
+                (self.thickness, C.DEFAULT_THICKNESS,
+                 self._cb_thickness_change),
+                (self.width, C.DEFAULT_WIDTH,
+                 self._cb_width_change),
+                (self.height, C.DEFAULT_HEIGHT,
+                 self._cb_height_change),
+                (self.root, C.DEFAULT_ROOT_SCALE,
+                 self._cb_root_change),
+                (self.middle, C.DEFAULT_MIDDLE_SCALE,
+                 self._cb_middle_change),
+                (self.tip, C.DEFAULT_TIP_SCALE,
+                 self._cb_tip_change),
+                (self.twist, C.DEFAULT_TWIST,
+                 self._cb_twist_change),
+                (self.rotation, C.DEFAULT_ROTATION,
+                 self._cb_rotation_change),
+            ):
+                if not widget:
+                    continue
+                try:
+                    cmds.floatSliderGrp(
+                        widget, edit=True, value=float(default))
+                except Exception:
+                    continue
+                try:
+                    change_cb()
+                except Exception:
+                    pass
+
+            # Create panel — int sliders.
+            for widget, default, change_cb in (
+                (self.subdiv_axis, C.DEFAULT_SUBDIVISIONS_AXIS,
+                 self._cb_subdiv_axis_change),
+                (self.subdiv_length, C.DEFAULT_SUBDIVISIONS_LENGTH,
+                 self._cb_subdiv_length_change),
+            ):
+                if not widget:
+                    continue
+                try:
+                    cmds.intSliderGrp(
+                        widget, edit=True, value=int(default))
+                except Exception:
+                    continue
+                try:
+                    change_cb()
+                except Exception:
+                    pass
+
+            # Profile-specific sliders — reset each to its spec
+            # default and apply via the absolute setter.
+            for attr, wtup in list(
+                    self.profile_specific_widgets.items()):
+                widget, is_int = wtup
+                default = None
+                for specs in _PROFILE_ATTR_SLIDERS.values():
+                    for spec in specs:
+                        if spec[1] == attr:
+                            default = spec[2]
+                            break
+                    if default is not None:
+                        break
+                if default is None:
+                    continue
+                try:
+                    if is_int:
+                        cmds.intSliderGrp(
+                            widget, edit=True, value=int(default))
+                    else:
+                        cmds.floatSliderGrp(
+                            widget, edit=True, value=float(default))
+                except Exception:
+                    continue
+                cast = int if is_int else float
+                try:
+                    self._live_apply(
+                        self._set_attr_absolute(
+                            attr, default, cast=cast),
+                        record_undo=False)
+                except Exception:
+                    pass
+
+            # Batch panel — pure UI reset (no scene apply; user runs
+            # 「選択に適用」explicitly for Batch, so we only clear the
+            # sliders back to their identity values here).
+            batch_float_defaults = (
+                (self.batch_thickness, 1.0),
+                (self.batch_width, 1.0),
+                (self.batch_height, 1.0),
+                (self.batch_root, 1.0),
+                (self.batch_middle, 1.0),
+                (self.batch_tip, 1.0),
+                (self.batch_twist, 0.0),
+            )
+            batch_int_defaults = (
+                (self.batch_subdiv, C.DEFAULT_SUBDIVISIONS_AXIS),
+            )
+            for widget, default in batch_float_defaults:
+                if not widget:
+                    continue
+                try:
+                    cmds.floatSliderGrp(
+                        widget, edit=True, value=float(default))
+                except Exception:
+                    pass
+            for widget, default in batch_int_defaults:
+                if not widget:
+                    continue
+                try:
+                    cmds.intSliderGrp(
+                        widget, edit=True, value=int(default))
+                except Exception:
+                    pass
+
+    def _on_show_version(self, *_):
+        """About → バージョン情報 dialog."""
+        try:
+            cmds.confirmDialog(
+                title="バージョン情報",
+                message=(
+                    "{title}\n\n"
+                    "バージョン: {ver}\n"
+                    "リポジトリ: https://github.com/{owner}/{repo}\n"
+                    "ブランチ: {branch}\n\n"
+                    "更新は About → GitHub から更新 で可能。\n"
+                    "配布ファイル: install.py \n"
+                ).format(
+                    title=WINDOW_TITLE,
+                    ver=__version__,
+                    owner=_GITHUB_OWNER,
+                    repo=_GITHUB_REPO,
+                    branch=_GITHUB_BRANCH,
+                ),
+                button=["OK"],
+            )
+        except Exception:
+            pass
+
+    # -----------------------------------------------------------------
     # Footer
     # -----------------------------------------------------------------
     def _build_footer(self, parent):
         row = cmds.rowLayout(
-            numberOfColumns=3,
+            numberOfColumns=2,
             adjustableColumn=1,
-            columnAttach=[(1, "both", 4), (2, "both", 4), (3, "both", 4)],
-            columnWidth3=(160, 110, 60),
+            columnAttach=[(1, "both", 4), (2, "both", 4)],
+            columnWidth2=(280, 80),
             parent=parent,
         )
         cmds.text(
-            label="{0}  v{1}".format(_PACKAGE, __version__),
+            label=("{0}  v{1}   (更新は About メニューから)".format(
+                _PACKAGE, __version__)),
             align="left",
             font="smallObliqueLabelFont",
             parent=row,
         )
-        cmds.button(label="GitHub から更新", height=24,
-                    command=update_from_github, parent=row)
         cmds.button(label="閉じる",
                     command=lambda *_: cmds.deleteUI(WINDOW_NAME),
                     parent=row)
