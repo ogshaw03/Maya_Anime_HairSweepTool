@@ -793,6 +793,19 @@ class HairBuilderUI(object):
             wordWrap=True,
         )
 
+        # Primary "generate" button — placed here at the top so it
+        # stays visible even when the panel scrolls (taper editor +
+        # profile-specific sliders + inline help stacked up made the
+        # bottom-placed original invisible without scrolling).
+        cmds.button(
+            label="▶ 選択カーブから毛束を生成",
+            height=36,
+            annotation=("シーンで選択中の NURBS カーブに対し、"
+                        "以下のスライダー値で毛束を新規生成します。"),
+            command=self._on_create, parent=col,
+        )
+        cmds.separator(height=6, style="none", parent=col)
+
         cmds.text(label="プロファイル", align="left", parent=col)
         self.profile_menu = cmds.optionMenu(
             parent=col, changeCommand=self._cb_profile_change)
