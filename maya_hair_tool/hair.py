@@ -153,7 +153,13 @@ def create_hair_from_selected_curves(
 
     created: List[str] = []
     created_meshes: List[str] = []
-    hair_group = _ensure_hair_group() if group else None
+    if group:
+        _ensure_hair_group()
+        geom_root = _ensure_geometry_group()
+        curve_root = _ensure_curve_group()
+    else:
+        geom_root = None
+        curve_root = None
 
     for curve in curves:
         name_hint = _unique_hair_name(curve)
@@ -174,19 +180,31 @@ def create_hair_from_selected_curves(
             subdivisions_length=subdivisions_length,
         )
 
-        if hair_group and cmds.objExists(mesh_xform):
+        # Mesh under Geometry_group (ungrouped level).
+        if geom_root and cmds.objExists(mesh_xform):
             try:
-                parented = cmds.parent(mesh_xform, hair_group)
-                # cmds.parent returns the new full path(s); use it so
-                # created_meshes references the moved node instead of
-                # the old short name (which can collide with a same-
-                # named node elsewhere and cause a select mis-fire).
+                parented = cmds.parent(mesh_xform, geom_root)
                 if parented:
                     mesh_xform = parented[0]
             except RuntimeError as exc:
                 cmds.warning(
                     "[maya_hair_tool] could not parent {0} under {1}: "
-                    "{2}".format(mesh_xform, hair_group, exc))
+                    "{2}".format(mesh_xform, geom_root, exc))
+
+        # Guide curve under Curve_group (ungrouped level).
+        if curve_root and cmds.objExists(curve):
+            parents = cmds.listRelatives(
+                curve, parent=True, fullPath=True) or []
+            if not parents or (
+                    parents[0].split("|")[-1] !=
+                    curve_root.split("|")[-1]):
+                try:
+                    cmds.parent(curve, curve_root)
+                except RuntimeError as exc:
+                    cmds.warning(
+                        "[maya_hair_tool] could not parent curve {0} "
+                        "under {1}: {2}".format(
+                            curve, curve_root, exc))
 
         created.append(creator)
         if mesh_xform:
@@ -206,6 +224,140 @@ def _ensure_hair_group() -> str:
     if not cmds.objExists(C.HAIR_GROUP_NAME):
         return cmds.group(empty=True, name=C.HAIR_GROUP_NAME)
     return C.HAIR_GROUP_NAME
+
+
+def _child_by_short_name(parent: str, short: str) -> Optional[str]:
+    """Return the full path of a direct child of ``parent`` whose
+    short name matches ``short`` (or None)."""
+    if not cmds.objExists(parent):
+        return None
+    children = cmds.listRelatives(
+        parent, children=True, type="transform",
+        fullPath=True) or []
+    for c in children:
+        if c.split("|")[-1] == short:
+            return c
+    return None
+
+
+def _ensure_geometry_group() -> str:
+    """Return the full path of ``HairGroup/Geometry_group``,
+    creating it if missing. Runs the legacy-layout migration on
+    first access so scenes that predate the split get reorganised
+    automatically."""
+    parent = _ensure_hair_group()
+    existing = _child_by_short_name(parent, C.GEOMETRY_GROUP_NAME)
+    if existing:
+        return existing
+    # Migrate any pre-existing top-level ``Geometry_group`` node
+    # under HairGroup (unlikely but handled) before creating fresh.
+    if cmds.objExists(C.GEOMETRY_GROUP_NAME):
+        try:
+            reparented = cmds.parent(
+                C.GEOMETRY_GROUP_NAME, parent) or []
+            if reparented:
+                return reparented[0]
+        except RuntimeError:
+            pass
+    return cmds.group(
+        empty=True, name=C.GEOMETRY_GROUP_NAME, parent=parent)
+
+
+def _ensure_curve_group() -> str:
+    parent = _ensure_hair_group()
+    existing = _child_by_short_name(parent, C.CURVE_GROUP_NAME)
+    if existing:
+        return existing
+    if cmds.objExists(C.CURVE_GROUP_NAME):
+        try:
+            reparented = cmds.parent(
+                C.CURVE_GROUP_NAME, parent) or []
+            if reparented:
+                return reparented[0]
+        except RuntimeError:
+            pass
+    return cmds.group(
+        empty=True, name=C.CURVE_GROUP_NAME, parent=parent)
+
+
+def _migrate_legacy_hierarchy() -> None:
+    """One-time migration for scenes created before the
+    Geometry_group / Curve_group split (v0.3.12 and earlier).
+
+    Old scenes have strand meshes + user-created groups directly
+    under HairGroup. This walks those, reparents strand meshes
+    under Geometry_group, moves guide curves under Curve_group,
+    and mirrors group names on both sides."""
+    if cmds is None or not cmds.objExists(C.HAIR_GROUP_NAME):
+        return
+    children = cmds.listRelatives(
+        C.HAIR_GROUP_NAME, children=True, type="transform",
+        fullPath=True) or []
+    to_migrate_strands = []
+    to_migrate_groups = []
+    for c in children:
+        short = c.split("|")[-1]
+        if short in (C.GEOMETRY_GROUP_NAME, C.CURVE_GROUP_NAME):
+            continue  # already new-style
+        if _is_hair_strand_transform(c):
+            to_migrate_strands.append(c)
+        else:
+            # Anything else at this level is a legacy user-created
+            # hair group.
+            to_migrate_groups.append(c)
+
+    if not to_migrate_strands and not to_migrate_groups:
+        return
+
+    geom_root = _ensure_geometry_group()
+    curve_root = _ensure_curve_group()
+
+    for strand in to_migrate_strands:
+        try:
+            reparented = cmds.parent(strand, geom_root) or []
+            new_strand = (reparented[0]
+                          if reparented else strand)
+        except RuntimeError:
+            continue
+        creators = su.sweep_creators_from_nodes([new_strand])
+        for c in creators:
+            curve = su.curve_from_creator(c)
+            if curve and cmds.objExists(curve):
+                try:
+                    cmds.parent(curve, curve_root)
+                except RuntimeError:
+                    pass
+
+    for legacy_group in to_migrate_groups:
+        short = legacy_group.split("|")[-1]
+        # Ensure a mirroring container on the curve side first.
+        if not _child_by_short_name(curve_root, short):
+            try:
+                cmds.group(empty=True, name=short,
+                            parent=curve_root)
+            except Exception:
+                pass
+        # Move the group itself under Geometry_group.
+        try:
+            reparented = cmds.parent(legacy_group, geom_root) or []
+            new_group = (reparented[0]
+                          if reparented else legacy_group)
+        except RuntimeError:
+            continue
+        # Move each strand's guide curve into the matching
+        # curve-side container.
+        curve_side_path = _child_by_short_name(curve_root, short)
+        if not curve_side_path:
+            continue
+        for strand in strands_under(new_group):
+            creators = su.sweep_creators_from_nodes([strand])
+            for c in creators:
+                curve = su.curve_from_creator(c)
+                if curve and cmds.objExists(curve):
+                    try:
+                        cmds.parent(curve, curve_side_path)
+                    except RuntimeError:
+                        pass
 
 
 # ---------------------------------------------------------------------------
@@ -231,12 +383,20 @@ def _is_hair_strand_transform(node: str) -> bool:
 
 
 def list_hair_groups() -> List[str]:
-    """Return the full DAG paths of every hair group — i.e. every
-    transform child of HairGroup that isn't itself a strand."""
+    """Return the geometry-side full paths of every user-created
+    hair group (i.e. transform children of
+    ``HairGroup/Geometry_group`` that aren't themselves strands).
+    Runs the legacy-layout migration on entry so scenes upgraded
+    from v0.3.12 or earlier get organised on first list."""
     if not cmds.objExists(C.HAIR_GROUP_NAME):
         return []
+    _migrate_legacy_hierarchy()
+    geom_root = _child_by_short_name(
+        C.HAIR_GROUP_NAME, C.GEOMETRY_GROUP_NAME)
+    if not geom_root:
+        return []
     children = cmds.listRelatives(
-        C.HAIR_GROUP_NAME, children=True, type="transform",
+        geom_root, children=True, type="transform",
         fullPath=True) or []
     groups = []
     for c in children:
@@ -247,18 +407,55 @@ def list_hair_groups() -> List[str]:
 
 
 def create_hair_group(name: str) -> str:
-    """Create an empty hair group under HairGroup (or return an
-    existing one with the same name). Returns the group's full path."""
+    """Create a user hair group. This is now a *pair* of transforms
+    with the same short name, one under Geometry_group and one
+    under Curve_group. Returns the geometry-side full path
+    (the "canonical" identifier used elsewhere in the codebase)."""
     if cmds is None:
         raise RuntimeError("create_hair_group requires Maya.")
-    parent = _ensure_hair_group()
-    if cmds.objExists(name):
-        parents = cmds.listRelatives(
-            name, parent=True, fullPath=True) or []
-        if parents and parents[0].endswith("|" + C.HAIR_GROUP_NAME):
-            return parents[0] + "|" + name.split("|")[-1]
-    grp = cmds.group(empty=True, name=name, parent=parent)
-    return grp
+    geom_root = _ensure_geometry_group()
+    curve_root = _ensure_curve_group()
+
+    geom_existing = _child_by_short_name(geom_root, name)
+    if geom_existing is None:
+        try:
+            cmds.group(empty=True, name=name, parent=geom_root)
+        except Exception:
+            pass
+        geom_existing = _child_by_short_name(geom_root, name)
+
+    if not _child_by_short_name(curve_root, name):
+        try:
+            cmds.group(empty=True, name=name, parent=curve_root)
+        except Exception:
+            pass
+
+    return geom_existing or (geom_root + "|" + name)
+
+
+def _geometry_group_side(name_or_path: str) -> Optional[str]:
+    """Return the geometry-side full path for a group given either
+    its short name or its full path."""
+    if not name_or_path:
+        return None
+    short = name_or_path.split("|")[-1]
+    geom_root = _child_by_short_name(
+        C.HAIR_GROUP_NAME, C.GEOMETRY_GROUP_NAME)
+    if not geom_root:
+        return None
+    return _child_by_short_name(geom_root, short)
+
+
+def _curve_group_side(name_or_path: str) -> Optional[str]:
+    """Return the curve-side full path for a group."""
+    if not name_or_path:
+        return None
+    short = name_or_path.split("|")[-1]
+    curve_root = _child_by_short_name(
+        C.HAIR_GROUP_NAME, C.CURVE_GROUP_NAME)
+    if not curve_root:
+        return None
+    return _child_by_short_name(curve_root, short)
 
 
 def strands_under(node: str) -> List[str]:
@@ -280,12 +477,17 @@ def strands_in_group(group: str) -> List[str]:
 
 
 def ungrouped_strands() -> List[str]:
-    """Strand transforms that are direct children of HairGroup
-    (not tucked into a sub-group)."""
+    """Strand transforms that are direct children of
+    ``HairGroup/Geometry_group`` (not tucked into any user
+    sub-group)."""
     if not cmds.objExists(C.HAIR_GROUP_NAME):
         return []
+    geom_root = _child_by_short_name(
+        C.HAIR_GROUP_NAME, C.GEOMETRY_GROUP_NAME)
+    if not geom_root:
+        return []
     children = cmds.listRelatives(
-        C.HAIR_GROUP_NAME, children=True, type="transform",
+        geom_root, children=True, type="transform",
         fullPath=True) or []
     return [c for c in children if _is_hair_strand_transform(c)]
 
@@ -795,37 +997,68 @@ def clear_group_color(group: str) -> int:
 
 
 def move_strand_to_group(mesh_xform: str, group: Optional[str]) -> str:
-    """Reparent a strand mesh under ``group`` (or under HairGroup
-    directly if ``group`` is None/empty). Creates the group if it
-    doesn't exist yet. Returns the strand's new full path."""
+    """Reparent a strand under ``group``.
+
+    Under the v0.3.13 split hierarchy this means TWO reparents:
+    the mesh transform goes to ``HairGroup/Geometry_group/<group>``
+    and the corresponding guide curve goes to
+    ``HairGroup/Curve_group/<group>``. Both containers are created
+    on demand so calling with a brand-new group name Just Works.
+
+    ``group=None`` moves the strand back to the ungrouped level
+    (direct child of Geometry_group / Curve_group respectively).
+    """
     if cmds is None:
         raise RuntimeError("move_strand_to_group requires Maya.")
     if not cmds.objExists(mesh_xform):
         return mesh_xform
-    target = _ensure_hair_group()
+
     if group:
-        if not cmds.objExists(group):
-            target = create_hair_group(group)
-        else:
-            target = group
+        short = group.split("|")[-1]
+        create_hair_group(short)
+        geom_target = _geometry_group_side(short)
+        curve_target = _curve_group_side(short)
+    else:
+        geom_target = _ensure_geometry_group()
+        curve_target = _ensure_curve_group()
+
+    if not geom_target:
+        return mesh_xform
+
     new_path = mesh_xform
     try:
-        result = cmds.parent(mesh_xform, target) or []
+        result = cmds.parent(mesh_xform, geom_target) or []
         if result:
             new_path = result[0]
     except RuntimeError as exc:
         cmds.warning(
             "[maya_hair_tool] {0} を {1} へ移動できません: {2}".format(
-                mesh_xform, target, exc))
+                mesh_xform, geom_target, exc))
         return mesh_xform
 
-    # If the destination group has a stored colour, auto-apply it
-    # to the newly-arrived strand so it visually joins the group
-    # right away. displayColors state is synced with sibling
-    # strands (see apply_group_color_to_strand).
+    # Move the strand's guide curve into the matching Curve_group
+    # container so the scene stays tidy.
+    if curve_target:
+        creators = su.sweep_creators_from_nodes([new_path])
+        for c in creators:
+            curve = su.curve_from_creator(c)
+            if curve and cmds.objExists(curve):
+                parents = cmds.listRelatives(
+                    curve, parent=True, fullPath=True) or []
+                if not parents or (
+                        parents[0].split("|")[-1] !=
+                        curve_target.split("|")[-1]):
+                    try:
+                        cmds.parent(curve, curve_target)
+                    except RuntimeError as exc:
+                        cmds.warning(
+                            "[maya_hair_tool] curve {0} を {1} へ "
+                            "移動失敗: {2}".format(
+                                curve, curve_target, exc))
+
     if group:
         try:
-            apply_group_color_to_strand(new_path, group=target)
+            apply_group_color_to_strand(new_path, group=geom_target)
         except Exception as exc:
             cmds.warning(
                 "[maya_hair_tool] グループ色 自動適用失敗: "

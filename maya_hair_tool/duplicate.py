@@ -27,6 +27,7 @@ except ImportError:  # pragma: no cover
     cmds = None
 
 from . import constants as C
+from . import hair
 from . import sweep_utils as su
 
 
@@ -367,20 +368,41 @@ def _duplicate_custom_profile_curve(src: str, dst: str,
 
 
 def _match_parent(src_mesh: Optional[str], new_mesh: Optional[str]) -> None:
+    """Reparent the freshly-duplicated mesh under the same group as
+    the source. Under the v0.3.13 split hierarchy the "same group"
+    means the same Geometry_group/<name> container for the mesh,
+    and the matching Curve_group/<name> container for the new
+    guide curve — the pair-move is delegated to
+    ``hair.move_strand_to_group`` so both sides stay in sync."""
     if not src_mesh or not new_mesh or not cmds.objExists(src_mesh):
         return
     parents = cmds.listRelatives(src_mesh, parent=True, fullPath=True) or []
     if not parents:
         return
+    src_parent = parents[0]
+    src_parent_short = src_parent.split("|")[-1]
+
+    # If the source is under Geometry_group/<name>, route the move
+    # through hair.move_strand_to_group so the new strand's guide
+    # curve also lands in the matching Curve_group/<name>.
+    if src_parent_short not in (
+            C.HAIR_GROUP_NAME, C.GEOMETRY_GROUP_NAME):
+        try:
+            hair.move_strand_to_group(new_mesh, src_parent_short)
+            return
+        except Exception:
+            pass
+    # Ungrouped source (Geometry_group direct child or legacy
+    # HairGroup direct child) — fall back to the plain reparent
+    # under Geometry_group so the new strand still lands in the
+    # right container even if the source was a legacy scene.
     try:
-        cmds.parent(new_mesh, parents[0])
+        target = hair._ensure_geometry_group()
+        cmds.parent(new_mesh, target)
     except RuntimeError as exc:
-        # Parenting can legitimately fail (e.g. already under the same
-        # group) — warn so the user knows why the duplicate isn't
-        # grouped, instead of a silent "world root" placement.
         cmds.warning(
-            "[maya_hair_tool] could not parent {0} under {1}: "
-            "{2}".format(new_mesh, parents[0], exc))
+            "[maya_hair_tool] could not parent {0}: {1}".format(
+                new_mesh, exc))
 
 
 def _shape_to_transform(node: str) -> Optional[str]:

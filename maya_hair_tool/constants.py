@@ -46,6 +46,14 @@ HAIR_MESH_SUFFIX = "_mesh"
 HAIR_SWEEP_SUFFIX = "_sweep"
 HAIR_PROFILE_SUFFIX = "_profile"
 
+# HairGroup is split into two fixed sub-groups so meshes and their
+# guide curves stay tidy — HairGroup/Geometry_group/<name>/... for
+# mesh transforms, HairGroup/Curve_group/<name>/... for the curves
+# that drive them. Same <name> exists in both containers per
+# user-created hair group.
+GEOMETRY_GROUP_NAME = "Geometry_group"
+CURVE_GROUP_NAME = "Curve_group"
+
 # Custom attribute added to the sweepMeshCreator node so the tool can
 # recognise and re-open its own strands later.
 TOOL_TAG_ATTR = "animeHairTool"
