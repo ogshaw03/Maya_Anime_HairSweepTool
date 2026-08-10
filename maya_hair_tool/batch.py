@@ -42,6 +42,7 @@ ATTRS_BATCH = (
     "scaleProfileUniform",
     "twist",
     "rotateProfile",
+    "profilePolySides",
     "interpolationSteps",
     "interpolationPrecision",
 )

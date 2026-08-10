@@ -262,11 +262,11 @@ class HairBuilderUI(object):
             drag_cb=self._cb_rotation_drag,
             change_cb=self._cb_rotation_change)
         self.subdiv_axis = _int_slider(
-            col, "分割数 (軸)", C.DEFAULT_SUBDIVISIONS_AXIS, 3, 32,
+            col, "断面分割数", C.DEFAULT_SUBDIVISIONS_AXIS, 3, 32,
             drag_cb=self._cb_subdiv_axis_drag,
             change_cb=self._cb_subdiv_axis_change)
         self.subdiv_length = _int_slider(
-            col, "分割数 (長さ)", C.DEFAULT_SUBDIVISIONS_LENGTH, 1, 64,
+            col, "長さ分割数", C.DEFAULT_SUBDIVISIONS_LENGTH, 1, 64,
             drag_cb=self._cb_subdiv_length_drag,
             change_cb=self._cb_subdiv_length_change)
 
@@ -349,19 +349,37 @@ class HairBuilderUI(object):
             "表示)".format(attr))
 
     def _set_uniform_scale(self, value):
-        """Set the sweep's uniform scale (``scaleProfileUniform``).
+        """Set Thickness = uniform scale.
 
-        Uses Maya's own uniform multiplier rather than writing
-        scaleProfileX and scaleProfileY to the same value — the latter
-        would flatten a preset with a non-1.0 Y ratio (e.g. Oval's
-        Y=0.55 would be forced to Thickness×1.0).
+        ``scaleProfileUniform`` is a *bool* (link X ↔ Y). We turn it
+        on, then set ``scaleProfileX`` — Y auto-mirrors. Preset ratios
+        (Oval Y=0.55 etc.) are lost when Thickness is touched; that
+        matches Maya's Uniform-mode behaviour.
         """
         def setter(c):
-            attr = "scaleProfileUniform"
-            if cmds.attributeQuery(attr, node=c, exists=True):
-                cmds.setAttr(c + "." + attr, float(value))
+            v = float(value)
+            if cmds.attributeQuery("scaleProfileUniform",
+                                    node=c, exists=True):
+                cmds.setAttr(c + ".scaleProfileUniform", True)
             else:
-                self._warn_missing(attr)
+                self._warn_missing("scaleProfileUniform")
+            if cmds.attributeQuery("scaleProfileX", node=c, exists=True):
+                cmds.setAttr(c + ".scaleProfileX", v)
+            else:
+                self._warn_missing("scaleProfileX")
+        return setter
+
+    def _set_axis_scale(self, axis_attr, value):
+        """Set Width (X) or Height (Y) independently by first turning
+        Uniform off so the sibling axis isn't force-linked."""
+        def setter(c):
+            if cmds.attributeQuery("scaleProfileUniform",
+                                    node=c, exists=True):
+                cmds.setAttr(c + ".scaleProfileUniform", False)
+            if cmds.attributeQuery(axis_attr, node=c, exists=True):
+                cmds.setAttr(c + "." + axis_attr, float(value))
+            else:
+                self._warn_missing(axis_attr)
         return setter
 
     def _set_attr(self, attr, value, cast=float):
@@ -402,26 +420,26 @@ class HairBuilderUI(object):
             self._set_uniform_scale(_read_float(self.thickness)),
             record_undo=True)
 
-    # --- Width (X only) ---
+    # --- Width (X only, Uniform disabled) ---
     def _cb_width_drag(self, *_):
         self._live_apply(
-            self._set_attr("scaleProfileX", _read_float(self.width)),
+            self._set_axis_scale("scaleProfileX", _read_float(self.width)),
             record_undo=False)
 
     def _cb_width_change(self, *_):
         self._live_apply(
-            self._set_attr("scaleProfileX", _read_float(self.width)),
+            self._set_axis_scale("scaleProfileX", _read_float(self.width)),
             record_undo=True)
 
-    # --- Height (Y only) ---
+    # --- Height (Y only, Uniform disabled) ---
     def _cb_height_drag(self, *_):
         self._live_apply(
-            self._set_attr("scaleProfileY", _read_float(self.height)),
+            self._set_axis_scale("scaleProfileY", _read_float(self.height)),
             record_undo=False)
 
     def _cb_height_change(self, *_):
         self._live_apply(
-            self._set_attr("scaleProfileY", _read_float(self.height)),
+            self._set_axis_scale("scaleProfileY", _read_float(self.height)),
             record_undo=True)
 
     # --- Root / Middle / Tip taper ---
@@ -477,31 +495,37 @@ class HairBuilderUI(object):
             self._set_attr("rotateProfile", _read_float(self.rotation)),
             record_undo=True)
 
-    # --- Subdivision (int) ---
+    # --- Subdivision ---
+    # 断面分割数: profilePolySides (Regular Polygon 系プロファイルで
+    #   側面数を決める)。Round では効きが薄いことがあるので断面が
+    #   はっきり分割される profile (Star / Square 等) を選んでから
+    #   触るのが分かりやすい。
+    # 長さ分割数: interpolationPrecision (interpolationMode が既定
+    #   の "Precision" の場合に有効)。
     def _cb_subdiv_axis_drag(self, *_):
         self._live_apply(
             self._set_attr(
-                "interpolationSteps", _read_int(self.subdiv_axis), cast=int),
+                "profilePolySides", _read_int(self.subdiv_axis), cast=int),
             record_undo=False)
 
     def _cb_subdiv_axis_change(self, *_):
         self._live_apply(
             self._set_attr(
-                "interpolationSteps", _read_int(self.subdiv_axis), cast=int),
+                "profilePolySides", _read_int(self.subdiv_axis), cast=int),
             record_undo=True)
 
     def _cb_subdiv_length_drag(self, *_):
         self._live_apply(
             self._set_attr(
                 "interpolationPrecision", _read_int(self.subdiv_length),
-                cast=int),
+                cast=float),
             record_undo=False)
 
     def _cb_subdiv_length_change(self, *_):
         self._live_apply(
             self._set_attr(
                 "interpolationPrecision", _read_int(self.subdiv_length),
-                cast=int),
+                cast=float),
             record_undo=True)
 
     # -----------------------------------------------------------------
@@ -568,15 +592,17 @@ class HairBuilderUI(object):
         self.batch_middle = _batch_slider(col, "中間スケール", 1.0, 0.0, 3.0)
         self.batch_tip = _batch_slider(col, "先端スケール", 1.0, 0.0, 3.0)
         self.batch_twist = _batch_slider(col, "ねじれ", 0.0, -720.0, 720.0)
-        self.batch_subdiv = _batch_int_slider(col, "分割数 (軸)", 8, 3, 32)
+        self.batch_subdiv = _batch_int_slider(col, "断面分割数", 8, 3, 32)
 
         cmds.text(
-            label=("スライダーが 1.0 (ねじれは 0.0、分割数は既定値の 8) "
+            label=("スライダーが 1.0 (ねじれは 0.0、断面分割数は既定 8) "
                    "のままの項目は「変更なし」として扱われます。"
                    "絶対値モードでは既存値を保持、相対モードでは ×1 の "
-                   "no-op になります。ねじれの相対モードは加算です "
-                   "(例: 相対 +45 → 各毛束の現在ねじれに +45°)。"
-                   "分割数は絶対値モードのみ適用されます。"),
+                   "no-op になります。ねじれの相対モードは加算 "
+                   "(例: 相対 +45 → 各毛束の現在ねじれに +45°)、"
+                   "断面分割数は絶対値モードのみ適用されます。"
+                   "太さは Uniform=ON、幅/高さは Uniform=OFF に切替 "
+                   "してから適用します。"),
             align="left", parent=col, font="smallObliqueLabelFont",
             wordWrap=True,
         )
@@ -611,11 +637,16 @@ class HairBuilderUI(object):
         # Relative).
         scalar_plan = []      # multiplicative attrs
         delta_plan = []       # additive attrs (Relative uses +, not *)
+        # ``scaleProfileUniform`` is a bool toggle (link X ↔ Y) so it
+        # needs its own pre-step, not a multiplicative row here.
+        uniform_pre = None  # True / False / None (leave as-is)
         if not batch.is_identity(thickness, 1.0):
-            # scaleProfileUniform preserves per-axis ratio (Oval etc.)
-            # instead of flattening X = Y = value.
-            scalar_plan.append(("scaleProfileUniform", thickness))
+            uniform_pre = True
+            scalar_plan.append(("scaleProfileX", thickness))
         else:
+            if (not batch.is_identity(width, 1.0)
+                    or not batch.is_identity(height_v, 1.0)):
+                uniform_pre = False
             if not batch.is_identity(width, 1.0):
                 scalar_plan.append(("scaleProfileX", width))
             if not batch.is_identity(height_v, 1.0):
@@ -628,12 +659,11 @@ class HairBuilderUI(object):
                 scalar_plan.append(("twist", twist))
             else:
                 delta_plan.append(("twist", twist))
-        # Subdivision applies only in Absolute mode, and only when the
-        # user actually moved it off the default (8). Skipping the
-        # default avoids stomping user-tuned subdiv while they tweak
-        # something else on the panel.
+        # 断面分割数 = profilePolySides (only meaningful on Regular
+        # Polygon profile types). Absolute only; Relative ×N on an
+        # integer count is ill-defined.
         if is_absolute and subdiv != C.DEFAULT_SUBDIVISIONS_AXIS:
-            scalar_plan.append(("interpolationSteps", subdiv))
+            scalar_plan.append(("profilePolySides", subdiv))
 
         # Skip the taper stage entirely when every taper slider is at
         # identity — otherwise ``set_taper_profile`` would wipe any
@@ -646,6 +676,17 @@ class HairBuilderUI(object):
         )
 
         with batch.batch_undo_chunk("HairBatchApply"):
+            # Toggle scaleProfileUniform once up-front so subsequent
+            # X/Y setAttr's aren't clobbered by Maya's Uniform link.
+            if uniform_pre is not None:
+                for c in creators:
+                    if cmds.attributeQuery(
+                            "scaleProfileUniform", node=c, exists=True):
+                        try:
+                            cmds.setAttr(
+                                c + ".scaleProfileUniform", uniform_pre)
+                        except Exception:
+                            pass
             for attr, value in scalar_plan:
                 if is_absolute:
                     batch.apply_absolute(creators, attr, value)

@@ -264,15 +264,24 @@ def _apply_settings(
     if profile is not None:
         set_profile(creator, profile)
 
-    # Thickness = uniform scale shorthand. ``scaleProfileUniform`` is
-    # sweepMeshCreator's own uniform multiplier applied on top of X/Y,
-    # so a preset that set X=1.0 / Y=0.55 (Oval) stays elliptic when
-    # Thickness is turned up — no baseline juggling needed on our end.
-    # Non-identity wins over width/height so a lone Thickness slider
-    # is not silently overridden by width/height defaults.
+    # Scale attribute wiring for Maya 2023's sweepMeshCreator:
+    # ``scaleProfileUniform`` is a *boolean* toggle (not a scale
+    # multiplier) that links X → Y when True. So:
+    #   * Thickness = "uniform scale" → Uniform=True + set X.
+    #     Y is auto-mirrored to X. Round preset stays circular,
+    #     but non-1.0 preset ratios (Oval Y=0.55) are lost — that's
+    #     Maya's Uniform mode behaviour, not ours to override.
+    #   * Width / Height = per-axis → Uniform=False + set X / Y.
     if thickness is not None and float(thickness) != 1.0:
-        _safe_set(creator, "scaleProfileUniform", float(thickness))
+        _safe_set(creator, "scaleProfileUniform", True)
+        _safe_set(creator, "scaleProfileX", float(thickness))
     else:
+        touched_axis = (
+            (width is not None and float(width) != 1.0)
+            or (height is not None and float(height) != 1.0)
+        )
+        if touched_axis:
+            _safe_set(creator, "scaleProfileUniform", False)
         if width is not None and float(width) != 1.0:
             _safe_set(creator, "scaleProfileX", float(width))
         if height is not None and float(height) != 1.0:
@@ -284,10 +293,16 @@ def _apply_settings(
     # otherwise Sharp/Diamond presets' 45° would be reset to 0.
     if rotation is not None and float(rotation) != 0.0:
         _safe_set(creator, "rotateProfile", float(rotation))
+    # subdivisions_axis = around the profile (polygon side count).
+    # subdivisions_length = along the curve — ``interpolationPrecision``
+    # is active in the default Precision mode. Users on a different
+    # ``interpolationMode`` need to touch the mode via the Attribute
+    # Editor for now.
     if subdivisions_axis is not None:
-        _safe_set(creator, "interpolationSteps", int(subdivisions_axis))
+        _safe_set(creator, "profilePolySides", int(subdivisions_axis))
     if subdivisions_length is not None:
-        _safe_set(creator, "interpolationPrecision", int(subdivisions_length))
+        _safe_set(creator, "interpolationPrecision",
+                  float(subdivisions_length))
     if root_scale is not None or middle_scale is not None or \
             tip_scale is not None:
         set_taper_profile(
