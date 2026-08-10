@@ -242,6 +242,23 @@ class HairBuilderUI(object):
                         "毛束にもリセット結果が反映されます。"),
             command=self._on_reset_all_sliders, parent=edit_menu,
         )
+        cmds.menuItem(divider=True, parent=edit_menu)
+        cmds.menuItem(
+            label="グループ色表示 ON (全グループ)",
+            annotation=("各グループに設定した色を毛束に反映します "
+                        "(overrideEnabled + overrideColorRGB の"
+                        "非破壊オーバーライド)。元マテリアルは"
+                        "変更されません。"),
+            command=self._on_group_color_show, parent=edit_menu,
+        )
+        cmds.menuItem(
+            label="マテリアル表示に戻す (全グループ)",
+            annotation=("全 strand の overrideEnabled を OFF に"
+                        "して、元のマテリアル表示に戻します。"
+                        "設定済みグループ色は保持されるので、"
+                        "上のメニューで再度 ON にできます。"),
+            command=self._on_group_color_hide, parent=edit_menu,
+        )
 
         about_menu = cmds.menu(
             label="About", tearOff=True, parent=WINDOW_NAME)
@@ -575,6 +592,11 @@ class HairBuilderUI(object):
         except Exception:
             return
         mode, targets = self._resolve_tree_selection()
+        sel = cmds.treeView(
+            self.hair_list, query=True, selectItem=True) or []
+        group_ids = [s for s in sel
+                     if s.startswith(self._GROUP_PREFIX)]
+
         if targets:
             cmds.menuItem(
                 label="内部ライブラリに保存",
@@ -589,9 +611,66 @@ class HairBuilderUI(object):
                 parent=menu_name,
             )
             cmds.menuItem(divider=True, parent=menu_name)
+        if group_ids:
+            cmds.menuItem(
+                label="グループ色を設定 …",
+                command=(lambda *_:
+                    self._on_set_group_color(group_ids)),
+                parent=menu_name,
+            )
+            cmds.menuItem(
+                label="グループ色をクリア",
+                command=(lambda *_:
+                    self._on_clear_group_color(group_ids)),
+                parent=menu_name,
+            )
+            cmds.menuItem(divider=True, parent=menu_name)
         cmds.menuItem(
             label="更新",
             command=self._on_refresh_hair_list, parent=menu_name)
+
+    def _on_set_group_color(self, group_ids):
+        """Open Maya's colorEditor, then apply the chosen RGB to
+        every currently-tree-selected group (and every strand in
+        those groups)."""
+        if not group_ids:
+            return
+        try:
+            cmds.colorEditor()
+            if not cmds.colorEditor(query=True, result=True):
+                return  # user cancelled the picker
+            rgb = cmds.colorEditor(query=True, rgbValue=True)
+        except Exception as exc:
+            cmds.warning("colorEditor 起動失敗: {0}".format(exc))
+            return
+        if not rgb or len(rgb) < 3:
+            return
+        for gid in group_ids:
+            group_path = gid[len(self._GROUP_PREFIX):]
+            try:
+                hair.set_group_color(
+                    group_path, (rgb[0], rgb[1], rgb[2]))
+            except Exception as exc:
+                cmds.warning(
+                    "[maya_hair_tool] {0} 色設定失敗: {1}".format(
+                        group_path, exc))
+        # Refresh so any UI states that mirror the group state
+        # (future badges etc.) update.
+        self._refresh_hair_list()
+
+    def _on_clear_group_color(self, group_ids):
+        for gid in group_ids:
+            group_path = gid[len(self._GROUP_PREFIX):]
+            for strand in hair.strands_under(group_path):
+                for node in (strand,) + tuple(
+                        cmds.listRelatives(
+                            strand, shapes=True, fullPath=True)
+                        or []):
+                    try:
+                        cmds.setAttr(node + ".overrideEnabled", 0)
+                    except Exception:
+                        pass
+        self._refresh_hair_list()
 
     def _on_save_tree_selection_to_internal(self):
         """右クリック → 内部ライブラリに保存. Uses the first strand
@@ -2563,6 +2642,36 @@ class HairBuilderUI(object):
                         widget, edit=True, value=int(default))
                 except Exception:
                     pass
+
+    def _on_group_color_show(self, *_):
+        try:
+            n = hair.apply_all_group_colors()
+        except Exception as exc:
+            cmds.warning(str(exc))
+            return
+        if n:
+            cmds.inViewMessage(
+                statusMessage=("グループ色表示 ON "
+                                "({0} グループ)".format(n)),
+                fade=True, position="topCenter",
+            )
+        else:
+            cmds.warning(
+                "色が設定されたグループがありません。"
+                "毛束一覧で group を右クリック → "
+                "「グループ色を設定 …」から色を割り当ててください。")
+
+    def _on_group_color_hide(self, *_):
+        try:
+            n = hair.clear_all_group_colors()
+        except Exception as exc:
+            cmds.warning(str(exc))
+            return
+        cmds.inViewMessage(
+            statusMessage=("マテリアル表示に戻しました "
+                            "({0} strand)".format(n)),
+            fade=True, position="topCenter",
+        )
 
     def _on_show_version(self, *_):
         """About → バージョン情報 dialog."""

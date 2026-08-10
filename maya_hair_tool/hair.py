@@ -295,6 +295,109 @@ def all_hair_strands() -> List[str]:
     return strands_under(C.HAIR_GROUP_NAME)
 
 
+def get_group_color(group: str) -> Optional[tuple]:
+    """Return the group's stored (r, g, b) tuple, or None when
+    the colour attributes haven't been added yet."""
+    if cmds is None or not cmds.objExists(group):
+        return None
+    if not cmds.attributeQuery(
+            C.GROUP_COLOR_R_ATTR, node=group, exists=True):
+        return None
+    try:
+        return (
+            float(cmds.getAttr(group + "." + C.GROUP_COLOR_R_ATTR)),
+            float(cmds.getAttr(group + "." + C.GROUP_COLOR_G_ATTR)),
+            float(cmds.getAttr(group + "." + C.GROUP_COLOR_B_ATTR)),
+        )
+    except Exception:
+        return None
+
+
+def set_group_color(group: str, rgb: tuple, apply_now: bool = True) -> None:
+    """Store ``(r, g, b)`` (each in 0..1) on the group transform
+    and, when ``apply_now`` is True, push the override colour to
+    every strand under the group so the viewport reflects it
+    immediately."""
+    if cmds is None or not cmds.objExists(group):
+        return
+    for attr, val in (
+        (C.GROUP_COLOR_R_ATTR, float(rgb[0])),
+        (C.GROUP_COLOR_G_ATTR, float(rgb[1])),
+        (C.GROUP_COLOR_B_ATTR, float(rgb[2])),
+    ):
+        if not cmds.attributeQuery(attr, node=group, exists=True):
+            try:
+                cmds.addAttr(
+                    group, longName=attr,
+                    attributeType="float",
+                    defaultValue=val,
+                    min=0.0, max=1.0)
+            except Exception:
+                pass
+        try:
+            cmds.setAttr(group + "." + attr, val)
+        except Exception:
+            pass
+    if apply_now:
+        _apply_group_color_to_strands(group, rgb)
+
+
+def _apply_group_color_to_strands(group: str, rgb: tuple) -> None:
+    """Push the drawing-override colour to every strand under
+    ``group``. Non-destructive — the strand's actual shader is
+    untouched; ``overrideEnabled`` gates whether Maya renders in
+    the override colour or the material colour."""
+    for mesh_xform in strands_under(group):
+        for node in (mesh_xform,) + tuple(
+                cmds.listRelatives(
+                    mesh_xform, shapes=True, fullPath=True) or []):
+            try:
+                cmds.setAttr(node + ".overrideEnabled", 1)
+                cmds.setAttr(node + ".overrideRGBColors", 1)
+                cmds.setAttr(
+                    node + ".overrideColorRGB",
+                    float(rgb[0]), float(rgb[1]), float(rgb[2]),
+                    type="double3")
+            except Exception:
+                pass
+
+
+def apply_all_group_colors() -> int:
+    """Walk every group and apply its stored colour to its strands
+    (turning override ON). Returns the number of groups processed —
+    useful for the UI status message."""
+    if cmds is None:
+        return 0
+    count = 0
+    for group in list_hair_groups():
+        rgb = get_group_color(group)
+        if rgb is None:
+            continue
+        _apply_group_color_to_strands(group, rgb)
+        count += 1
+    return count
+
+
+def clear_all_group_colors() -> int:
+    """Turn ``overrideEnabled`` OFF on every strand under every
+    group so the viewport falls back to the actual material.
+    Preserves the stored colour attributes so re-enabling brings
+    the same colours back."""
+    if cmds is None:
+        return 0
+    count = 0
+    for strand in all_hair_strands():
+        for node in (strand,) + tuple(
+                cmds.listRelatives(
+                    strand, shapes=True, fullPath=True) or []):
+            try:
+                cmds.setAttr(node + ".overrideEnabled", 0)
+                count += 1
+            except Exception:
+                pass
+    return count
+
+
 def move_strand_to_group(mesh_xform: str, group: Optional[str]) -> str:
     """Reparent a strand mesh under ``group`` (or under HairGroup
     directly if ``group`` is None/empty). Creates the group if it

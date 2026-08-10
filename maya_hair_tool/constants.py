@@ -62,3 +62,12 @@ INTERNAL_LIBRARY_GROUP = "InLibrary"
 # copied into InLibrary. Marks the strand as "preset material" so
 # tools can distinguish presets from live strands.
 PRESET_TAG_ATTR = "hairLibraryPreset"
+
+# Per-group display colour stored on the group transform as three
+# float attrs (RGB in 0-1). Applied to each descendant strand's
+# mesh transform via ``overrideEnabled`` + ``overrideColorRGB``
+# — non-destructive to the actual material and toggleable via
+# the group-colour visibility switch.
+GROUP_COLOR_R_ATTR = "hairGroupColorR"
+GROUP_COLOR_G_ATTR = "hairGroupColorG"
+GROUP_COLOR_B_ATTR = "hairGroupColorB"
