@@ -342,30 +342,151 @@ def set_group_color(group: str, rgb: tuple, apply_now: bool = True) -> None:
         _apply_group_color_to_strands(group, rgb)
 
 
-def _apply_group_color_to_strands(group: str, rgb: tuple) -> None:
-    """Push the drawing-override colour to every strand under
-    ``group``. Non-destructive — the strand's actual shader is
-    untouched; ``overrideEnabled`` gates whether Maya renders in
-    the override colour or the material colour."""
-    for mesh_xform in strands_under(group):
-        for node in (mesh_xform,) + tuple(
-                cmds.listRelatives(
-                    mesh_xform, shapes=True, fullPath=True) or []):
+def _sanitize_shader_name(name: str) -> str:
+    """Reduce a group name to a Maya-safe identifier so we can use
+    it as part of a shader / shadingEngine node name."""
+    import re
+    return re.sub(r"[^A-Za-z0-9_]", "_", name)
+
+
+def _ensure_group_shader(group: str, rgb: tuple) -> Optional[str]:
+    """Create (or reuse + recolour) a Lambert + shadingEngine pair
+    for ``group`` and return the shadingEngine name so
+    ``cmds.sets(..., forceElement=sg)`` can assign it."""
+    if cmds is None:
+        return None
+    short = group.split("|")[-1]
+    mat_name = C.GROUP_COLOR_MATERIAL_PREFIX + _sanitize_shader_name(short)
+    sg_name = mat_name + "SG"
+
+    if not cmds.objExists(mat_name):
+        mat_name = cmds.shadingNode(
+            "lambert", asShader=True, name=mat_name)
+    try:
+        cmds.setAttr(
+            mat_name + ".color",
+            float(rgb[0]), float(rgb[1]), float(rgb[2]),
+            type="double3")
+    except Exception:
+        pass
+
+    if not cmds.objExists(sg_name):
+        sg_name = cmds.sets(
+            name=sg_name, empty=True, renderable=True,
+            noSurfaceShader=True)
+        try:
+            cmds.connectAttr(
+                mat_name + ".outColor",
+                sg_name + ".surfaceShader",
+                force=True)
+        except Exception:
+            pass
+    else:
+        # Re-hook the connection in case someone tampered with it.
+        conns = cmds.listConnections(
+            sg_name + ".surfaceShader", source=True) or []
+        if mat_name not in conns:
             try:
-                cmds.setAttr(node + ".overrideEnabled", 1)
-                cmds.setAttr(node + ".overrideRGBColors", 1)
-                cmds.setAttr(
-                    node + ".overrideColorRGB",
-                    float(rgb[0]), float(rgb[1]), float(rgb[2]),
-                    type="double3")
+                cmds.connectAttr(
+                    mat_name + ".outColor",
+                    sg_name + ".surfaceShader",
+                    force=True)
             except Exception:
                 pass
+    return sg_name
+
+
+def _capture_original_sg(mesh_xform: str) -> Optional[str]:
+    """Remember the strand's current shading group on a string attr
+    of the mesh transform so it can be restored later. Called ONCE
+    per strand — subsequent calls are no-ops so a colour-toggle
+    round-trip doesn't accidentally record the colour SG as the
+    original."""
+    if cmds is None or not cmds.objExists(mesh_xform):
+        return None
+    if cmds.attributeQuery(
+            C.ORIGINAL_SHADING_GROUP_ATTR,
+            node=mesh_xform, exists=True):
+        # Already captured — do NOT overwrite (that'd lose the
+        # real original if we're currently in colour-view mode).
+        try:
+            return cmds.getAttr(
+                mesh_xform + "." + C.ORIGINAL_SHADING_GROUP_ATTR)
+        except Exception:
+            return None
+
+    shapes = cmds.listRelatives(
+        mesh_xform, shapes=True, type="mesh", fullPath=True) or []
+    if not shapes:
+        return None
+    sgs = cmds.listConnections(shapes[0], type="shadingEngine") or []
+    if not sgs:
+        return None
+    original_sg = sgs[0]
+    try:
+        cmds.addAttr(
+            mesh_xform,
+            longName=C.ORIGINAL_SHADING_GROUP_ATTR,
+            dataType="string")
+        cmds.setAttr(
+            mesh_xform + "." + C.ORIGINAL_SHADING_GROUP_ATTR,
+            original_sg, type="string")
+    except Exception:
+        pass
+    return original_sg
+
+
+def _assign_sg_to_strand(mesh_xform: str, sg: str) -> None:
+    """Force-assign a shading engine to every mesh shape under a
+    strand transform."""
+    shapes = cmds.listRelatives(
+        mesh_xform, shapes=True, type="mesh", fullPath=True) or []
+    for shape in shapes:
+        try:
+            cmds.sets(shape, edit=True, forceElement=sg)
+        except Exception:
+            pass
+
+
+def _apply_group_color_to_strands(group: str, rgb: tuple) -> None:
+    """Assign the group's coloured Lambert to every strand.
+    Captures the strand's original SG the first time so a later
+    restore lands back on the right material."""
+    sg = _ensure_group_shader(group, rgb)
+    if not sg:
+        return
+    for mesh_xform in strands_under(group):
+        _capture_original_sg(mesh_xform)
+        _assign_sg_to_strand(mesh_xform, sg)
+
+
+def _restore_original_sg(mesh_xform: str) -> bool:
+    """Reassign the strand's stored ``hairOriginalSG`` shading
+    engine. Falls back to ``initialShadingGroup`` if the stored
+    value is missing / points at a deleted SG."""
+    if cmds is None:
+        return False
+    target = "initialShadingGroup"
+    if cmds.attributeQuery(
+            C.ORIGINAL_SHADING_GROUP_ATTR,
+            node=mesh_xform, exists=True):
+        try:
+            saved = cmds.getAttr(
+                mesh_xform + "." + C.ORIGINAL_SHADING_GROUP_ATTR)
+        except Exception:
+            saved = None
+        if saved and cmds.objExists(saved):
+            target = saved
+    if not cmds.objExists(target):
+        return False
+    _assign_sg_to_strand(mesh_xform, target)
+    return True
 
 
 def apply_all_group_colors() -> int:
-    """Walk every group and apply its stored colour to its strands
-    (turning override ON). Returns the number of groups processed —
-    useful for the UI status message."""
+    """Walk every group with a stored colour and swap its strands
+    to the group's coloured Lambert. Returns the number of groups
+    processed."""
     if cmds is None:
         return 0
     count = 0
@@ -379,22 +500,30 @@ def apply_all_group_colors() -> int:
 
 
 def clear_all_group_colors() -> int:
-    """Turn ``overrideEnabled`` OFF on every strand under every
-    group so the viewport falls back to the actual material.
-    Preserves the stored colour attributes so re-enabling brings
-    the same colours back."""
+    """Restore every strand under HairGroup to its original
+    shading group. Preserves the per-group RGB attributes so
+    re-enabling brings the same colours back.
+
+    Returns the number of strands touched."""
     if cmds is None:
         return 0
     count = 0
     for strand in all_hair_strands():
-        for node in (strand,) + tuple(
-                cmds.listRelatives(
-                    strand, shapes=True, fullPath=True) or []):
-            try:
-                cmds.setAttr(node + ".overrideEnabled", 0)
-                count += 1
-            except Exception:
-                pass
+        if _restore_original_sg(strand):
+            count += 1
+    return count
+
+
+def clear_group_color(group: str) -> int:
+    """Restore just the strands under one group to their original
+    shading. Same semantics as ``clear_all_group_colors`` but
+    scoped to a single group."""
+    if cmds is None:
+        return 0
+    count = 0
+    for strand in strands_under(group):
+        if _restore_original_sg(strand):
+            count += 1
     return count
 
 

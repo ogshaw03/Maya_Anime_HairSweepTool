@@ -64,10 +64,14 @@ INTERNAL_LIBRARY_GROUP = "InLibrary"
 PRESET_TAG_ATTR = "hairLibraryPreset"
 
 # Per-group display colour stored on the group transform as three
-# float attrs (RGB in 0-1). Applied to each descendant strand's
-# mesh transform via ``overrideEnabled`` + ``overrideColorRGB``
-# — non-destructive to the actual material and toggleable via
-# the group-colour visibility switch.
+# float attrs (RGB in 0-1). Applied to strands by swapping their
+# shading engine to a lambert of the chosen colour — the drawing-
+# override path used up through v0.3.7 only recolored wireframes.
+# Toggling material ↔ group-colour view is a shader-swap, and the
+# strand's ORIGINAL shading group is stashed in
+# ``ORIGINAL_SHADING_GROUP_ATTR`` so it can be restored later.
 GROUP_COLOR_R_ATTR = "hairGroupColorR"
 GROUP_COLOR_G_ATTR = "hairGroupColorG"
 GROUP_COLOR_B_ATTR = "hairGroupColorB"
+GROUP_COLOR_MATERIAL_PREFIX = "hairGroupMat_"
+ORIGINAL_SHADING_GROUP_ATTR = "hairOriginalSG"

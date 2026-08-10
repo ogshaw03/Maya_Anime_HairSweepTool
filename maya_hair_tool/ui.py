@@ -659,17 +659,20 @@ class HairBuilderUI(object):
         self._refresh_hair_list()
 
     def _on_clear_group_color(self, group_ids):
+        total = 0
         for gid in group_ids:
             group_path = gid[len(self._GROUP_PREFIX):]
-            for strand in hair.strands_under(group_path):
-                for node in (strand,) + tuple(
-                        cmds.listRelatives(
-                            strand, shapes=True, fullPath=True)
-                        or []):
-                    try:
-                        cmds.setAttr(node + ".overrideEnabled", 0)
-                    except Exception:
-                        pass
+            try:
+                total += hair.clear_group_color(group_path)
+            except Exception as exc:
+                cmds.warning(
+                    "[maya_hair_tool] {0} 色クリア失敗: {1}".format(
+                        group_path, exc))
+        if total:
+            cmds.inViewMessage(
+                statusMessage=("グループ色クリア: {0} strand".format(
+                    total)),
+                fade=True, position="topCenter")
         self._refresh_hair_list()
 
     def _on_save_tree_selection_to_internal(self):
