@@ -382,27 +382,37 @@ def _match_parent(src_mesh: Optional[str], new_mesh: Optional[str]) -> None:
     src_parent = parents[0]
     src_parent_short = src_parent.split("|")[-1]
 
-    # If the source is under Geometry_group/<name>, route the move
-    # through hair.move_strand_to_group so the new strand's guide
-    # curve also lands in the matching Curve_group/<name>.
-    if src_parent_short not in (
+    # InLibrary preset duplicates are placed by the caller
+    # (save_hair_to_internal / import_from_internal). Skipping here
+    # avoids creating ghost 'InLibrary' containers on both sides
+    # (which would happen if we routed through
+    # move_strand_to_group('InLibrary', ...) — that helper always
+    # materialises the group).
+    if src_parent_short == C.INTERNAL_LIBRARY_GROUP:
+        return
+
+    # HairGroup / Geometry_group direct = ungrouped strand.
+    # Pair-move mesh AND its new guide curve to the ungrouped level
+    # (Geometry_group direct + Curve_group direct). The old branch
+    # only parented the mesh, leaving the duplicate's curve orphan
+    # at world root when duplicating a legacy-layout strand.
+    if src_parent_short in (
             C.HAIR_GROUP_NAME, C.GEOMETRY_GROUP_NAME):
         try:
-            hair.move_strand_to_group(new_mesh, src_parent_short)
-            return
-        except Exception:
-            pass
-    # Ungrouped source (Geometry_group direct child or legacy
-    # HairGroup direct child) — fall back to the plain reparent
-    # under Geometry_group so the new strand still lands in the
-    # right container even if the source was a legacy scene.
+            hair.move_strand_to_group(new_mesh, None)
+        except Exception as exc:
+            cmds.warning(
+                "[maya_hair_tool] ungrouped 移動失敗 ({0}): "
+                "{1}".format(new_mesh, exc))
+        return
+
+    # Named user group.
     try:
-        target = hair._ensure_geometry_group()
-        cmds.parent(new_mesh, target)
-    except RuntimeError as exc:
+        hair.move_strand_to_group(new_mesh, src_parent_short)
+    except Exception as exc:
         cmds.warning(
-            "[maya_hair_tool] could not parent {0}: {1}".format(
-                new_mesh, exc))
+            "[maya_hair_tool] グループ '{0}' への移動失敗: "
+            "{1}".format(src_parent_short, exc))
 
 
 def _shape_to_transform(node: str) -> Optional[str]:

@@ -2359,13 +2359,22 @@ class HairBuilderUI(object):
             return
         # 2. Refresh the grid — the doomed preset drops off the list
         #    and its iconTextButton is destroyed, releasing the png
-        #    file handle Maya was holding on Windows.
-        self._refresh_internal_library_grid()
-        # 3. Now the handle is free, remove the png.
+        #    file handle Maya was holding on Windows. Wrap in
+        #    try/finally so a refresh crash can't strand the png
+        #    (it would otherwise become a permanent orphan — the
+        #    UUID lookup path is already dead since the scene nodes
+        #    are gone).
         try:
-            library.delete_internal_library_thumb(thumb)
+            self._refresh_internal_library_grid()
         except Exception as exc:
-            cmds.warning(str(exc))
+            cmds.warning(
+                "[maya_hair_tool] grid 更新失敗 (削除は続行): "
+                "{0}".format(exc))
+        finally:
+            try:
+                library.delete_internal_library_thumb(thumb)
+            except Exception as exc:
+                cmds.warning(str(exc))
 
     def _export_internal_to_external(self, preset_mesh, default_name):
         """内部プリセットを .ma に書き出して外部ライブラリに登録。"""

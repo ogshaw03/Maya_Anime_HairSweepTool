@@ -823,27 +823,21 @@ def import_from_internal(preset_mesh: str) -> Optional[str]:
         raise RuntimeError("プリセットの展開に失敗しました。")
     new_creator = new_creators[0]
     new_mesh = su.mesh_from_creator(new_creator)
-    new_curve = su.curve_from_creator(new_creator)
 
-    # Move to HairGroup and drop the preset tag on the copy so it
-    # behaves like a normal strand from here on out.
-    hair_grp = hair._ensure_hair_group()
+    # Route the copy through the v0.3.13 split-hierarchy helper so
+    # the mesh lands under HairGroup/Geometry_group and its guide
+    # curve under HairGroup/Curve_group — matching every other
+    # live strand. Using the helper (rather than a raw
+    # cmds.parent) also stops ``_migrate_legacy_hierarchy`` from
+    # later mis-classifying the orphan curve as a legacy user
+    # group and manufacturing ghost containers on both sides.
     if new_mesh:
         try:
-            result = cmds.parent(new_mesh, hair_grp) or []
-            if result:
-                new_mesh = result[0]
-        except RuntimeError:
-            pass
-    if new_curve:
-        parents = cmds.listRelatives(
-            new_curve, parent=True, fullPath=True) or []
-        parent_short = parents[0].split("|")[-1] if parents else ""
-        if parent_short != C.HAIR_GROUP_NAME:
-            try:
-                cmds.parent(new_curve, hair_grp)
-            except RuntimeError:
-                pass
+            new_mesh = hair.move_strand_to_group(new_mesh, None)
+        except Exception as exc:
+            cmds.warning(
+                "[maya_hair_tool] インポート後の再親付け失敗: "
+                "{0}".format(exc))
     _untag_preset(new_creator)
     if new_mesh:
         try:
@@ -902,9 +896,14 @@ def delete_internal_library_thumb(thumb_path: str) -> None:
     try:
         os.remove(thumb_path)
     except Exception as exc:
-        cmds.warning(
-            "[maya_hair_tool] サムネ png 削除失敗 ({0}): "
-            "{1}".format(thumb_path, exc))
+        # batch-mode friendly — ``cmds`` may be None on import.
+        msg = ("[maya_hair_tool] サムネ png 削除失敗 ({0}): "
+               "{1}. Grid を更新してから再試行してください。".format(
+                   thumb_path, exc))
+        if cmds is not None:
+            cmds.warning(msg)
+        else:
+            print(msg)
 
 
 def delete_internal_library_entry(preset_mesh: str) -> None:

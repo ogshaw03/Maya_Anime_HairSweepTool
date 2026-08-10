@@ -240,14 +240,37 @@ def _child_by_short_name(parent: str, short: str) -> Optional[str]:
     return None
 
 
+# Recursion guard for the "migrate on first access" hook baked into
+# _ensure_geometry_group / _ensure_curve_group. The migration itself
+# calls those two helpers to materialise the containers it moves
+# things into; without this flag we'd loop forever.
+_MIGRATING = [False]
+
+
 def _ensure_geometry_group() -> str:
     """Return the full path of ``HairGroup/Geometry_group``,
     creating it if missing. Runs the legacy-layout migration on
     first access so scenes that predate the split get reorganised
-    automatically."""
+    automatically, before any caller can reach in and start
+    creating same-named groups (which would collide with the
+    migrator's own creates)."""
     parent = _ensure_hair_group()
+    # Fast path: containers already exist → skip migration entirely
+    # (it's idempotent but this avoids the listRelatives sweep on
+    # every strand op in a clean scene).
     existing = _child_by_short_name(parent, C.GEOMETRY_GROUP_NAME)
     if existing:
+        if not _MIGRATING[0]:
+            # Still run migration in case a legacy strand or user
+            # group got added later — cheap early-exit if nothing
+            # needs migrating.
+            _MIGRATING[0] = True
+            try:
+                _migrate_legacy_hierarchy()
+            finally:
+                _MIGRATING[0] = False
+            existing = _child_by_short_name(
+                parent, C.GEOMETRY_GROUP_NAME) or existing
         return existing
     # Migrate any pre-existing top-level ``Geometry_group`` node
     # under HairGroup (unlikely but handled) before creating fresh.
@@ -256,11 +279,30 @@ def _ensure_geometry_group() -> str:
             reparented = cmds.parent(
                 C.GEOMETRY_GROUP_NAME, parent) or []
             if reparented:
-                return reparented[0]
+                created = reparented[0]
+            else:
+                created = None
         except RuntimeError:
-            pass
-    return cmds.group(
+            created = None
+        if created:
+            if not _MIGRATING[0]:
+                _MIGRATING[0] = True
+                try:
+                    _migrate_legacy_hierarchy()
+                finally:
+                    _MIGRATING[0] = False
+            return _child_by_short_name(
+                parent, C.GEOMETRY_GROUP_NAME) or created
+    created = cmds.group(
         empty=True, name=C.GEOMETRY_GROUP_NAME, parent=parent)
+    if not _MIGRATING[0]:
+        _MIGRATING[0] = True
+        try:
+            _migrate_legacy_hierarchy()
+        finally:
+            _MIGRATING[0] = False
+    return _child_by_short_name(
+        parent, C.GEOMETRY_GROUP_NAME) or created
 
 
 def _ensure_curve_group() -> str:
@@ -301,9 +343,19 @@ def _migrate_legacy_hierarchy() -> None:
             continue  # already new-style
         if _is_hair_strand_transform(c):
             to_migrate_strands.append(c)
-        else:
-            # Anything else at this level is a legacy user-created
-            # hair group.
+            continue
+        # A non-strand transform is treated as a legacy user hair
+        # group ONLY if it actually contains hair strands. Otherwise
+        # it's a stray guide curve, a locator, or (much more
+        # commonly) some unrelated organisational transform the
+        # user parented under HairGroup by hand — those must be
+        # left alone. Misclassifying them creates ghost containers
+        # on both sides that the UI then surfaces as fake groups.
+        try:
+            has_strand = bool(strands_under(c))
+        except Exception:
+            has_strand = False
+        if has_strand:
             to_migrate_groups.append(c)
 
     if not to_migrate_strands and not to_migrate_groups:
@@ -329,26 +381,30 @@ def _migrate_legacy_hierarchy() -> None:
                     pass
 
     for legacy_group in to_migrate_groups:
-        short = legacy_group.split("|")[-1]
-        # Ensure a mirroring container on the curve side first.
-        if not _child_by_short_name(curve_root, short):
-            try:
-                cmds.group(empty=True, name=short,
-                            parent=curve_root)
-            except Exception:
-                pass
-        # Move the group itself under Geometry_group.
+        # Move the group itself under Geometry_group FIRST. Maya
+        # may auto-rename on collision (e.g. Bangs → Bangs1) so
+        # we must derive the mirrored curve-side name from the
+        # POST-reparent short name, not the original one.
         try:
             reparented = cmds.parent(legacy_group, geom_root) or []
             new_group = (reparented[0]
                           if reparented else legacy_group)
         except RuntimeError:
             continue
-        # Move each strand's guide curve into the matching
-        # curve-side container.
+        short = new_group.split("|")[-1]
+        # Now create the matching curve-side container using the
+        # actual name (post-rename if that happened).
         curve_side_path = _child_by_short_name(curve_root, short)
         if not curve_side_path:
+            try:
+                curve_side_path = cmds.group(
+                    empty=True, name=short, parent=curve_root)
+            except Exception:
+                curve_side_path = None
+        if not curve_side_path:
             continue
+        # Move each strand's guide curve into the matching
+        # curve-side container.
         for strand in strands_under(new_group):
             creators = su.sweep_creators_from_nodes([strand])
             for c in creators:
@@ -410,7 +466,10 @@ def create_hair_group(name: str) -> str:
     """Create a user hair group. This is now a *pair* of transforms
     with the same short name, one under Geometry_group and one
     under Curve_group. Returns the geometry-side full path
-    (the "canonical" identifier used elsewhere in the codebase)."""
+    (the "canonical" identifier used elsewhere in the codebase).
+    Raises RuntimeError if the geometry-side container can't be
+    materialised — never returns a synthesised, non-existent path
+    (that used to produce silent 'move' failures downstream)."""
     if cmds is None:
         raise RuntimeError("create_hair_group requires Maya.")
     geom_root = _ensure_geometry_group()
@@ -420,17 +479,25 @@ def create_hair_group(name: str) -> str:
     if geom_existing is None:
         try:
             cmds.group(empty=True, name=name, parent=geom_root)
-        except Exception:
-            pass
+        except Exception as exc:
+            raise RuntimeError(
+                "グループ '{0}' を Geometry_group 直下に作成できません"
+                "でした: {1}".format(name, exc))
         geom_existing = _child_by_short_name(geom_root, name)
+        if geom_existing is None:
+            raise RuntimeError(
+                "グループ '{0}' の作成後に検出できませんでした "
+                "(名前衝突の可能性)".format(name))
 
     if not _child_by_short_name(curve_root, name):
         try:
             cmds.group(empty=True, name=name, parent=curve_root)
-        except Exception:
-            pass
+        except Exception as exc:
+            cmds.warning(
+                "[maya_hair_tool] Curve_group 側に '{0}' を作成"
+                "できません: {1}".format(name, exc))
 
-    return geom_existing or (geom_root + "|" + name)
+    return geom_existing
 
 
 def _geometry_group_side(name_or_path: str) -> Optional[str]:
