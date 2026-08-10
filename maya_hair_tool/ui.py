@@ -246,18 +246,26 @@ class HairBuilderUI(object):
             command=self._on_show_version, parent=about_menu,
         )
 
-        # Top-level split: left = hair list, right = existing panels.
-        # paneLayout gives the user a draggable divider between them.
+        # Top-level split: left = hair list + library stacked
+        # vertically (Substance Painter–like: layers-panel on top,
+        # asset shelf underneath), right = the rest of the panels.
         pane = cmds.paneLayout(configuration="vertical2",
-                               paneSize=[1, 30, 100])
+                               paneSize=[1, 32, 100])
 
-        # Each pane holds a single stretchy formLayout so the child
-        # widget fills the pane's full height — otherwise a plain
-        # columnLayout would keep its children at their natural size
-        # and leave a gap between the list and the pane's bottom edge.
-        left_form = cmds.formLayout(parent=pane)
-        self._build_hair_list_panel(left_form)
+        # LEFT — vertical split via a nested paneLayout so the
+        # divider between hair list and library is draggable.
+        left_split = cmds.paneLayout(
+            configuration="horizontal2",
+            paneSize=[1, 100, 62],
+            parent=pane)
 
+        list_form = cmds.formLayout(parent=left_split)
+        self._build_hair_list_panel(list_form)
+
+        library_form = cmds.formLayout(parent=left_split)
+        self._build_library_panel(library_form)
+
+        # RIGHT
         right_form = cmds.formLayout(parent=pane)
         right_scroll = cmds.scrollLayout(
             horizontalScrollBarThickness=0,
@@ -282,8 +290,6 @@ class HairBuilderUI(object):
         self._build_duplicate_panel(right_body)
         cmds.separator(height=8, style="in", parent=right_body)
         self._build_batch_panel(right_body)
-        cmds.separator(height=8, style="in", parent=right_body)
-        self._build_library_panel(right_body)
         cmds.separator(height=8, style="in", parent=right_body)
         self._build_footer(right_body)
 
@@ -1737,52 +1743,87 @@ class HairBuilderUI(object):
     # Hair library panel (Phase 4)
     # -----------------------------------------------------------------
     def _build_library_panel(self, parent):
+        """``parent`` is expected to be a formLayout so the frame
+        stretches to fill the left pane's bottom half. Layout mirrors
+        Substance Painter's shelf: a header, a scrollable icon grid
+        that grows / shrinks with the pane, then a two-button strip
+        pinned to the bottom."""
         self.library_frame = cmds.frameLayout(
-            label="ヘアライブラリ", collapsable=True, collapse=False,
-            marginHeight=6, marginWidth=6, parent=parent)
-        col = cmds.columnLayout(adjustableColumn=True, rowSpacing=4)
+            label="ヘアライブラリ", collapsable=False,
+            marginHeight=4, marginWidth=4, parent=parent)
+        cmds.formLayout(
+            parent, edit=True,
+            attachForm=[
+                (self.library_frame, "top", 0),
+                (self.library_frame, "bottom", 0),
+                (self.library_frame, "left", 0),
+                (self.library_frame, "right", 0),
+            ],
+        )
 
-        import os as _os
+        inner = cmds.formLayout(parent=self.library_frame)
+
         try:
             root_path = library.library_root()
         except Exception:
             root_path = "(unknown)"
-        cmds.text(
-            label=("保存先: {0}\n"
-                   "選択毛束を保存 → 別シーンや他毛束の"
-                   "そばに貼り付け可能。".format(root_path)),
-            align="left", parent=col, font="smallObliqueLabelFont",
-            wordWrap=True,
+        header = cmds.text(
+            label=("保存先: {0}".format(root_path)),
+            align="left", font="smallObliqueLabelFont",
+            wordWrap=True, parent=inner,
         )
 
-        # Icon grid — populated by _refresh_library_grid.
+        # Scrollable icon grid so N presets scroll instead of pushing
+        # the buttons off screen.
+        grid_scroll = cmds.scrollLayout(
+            horizontalScrollBarThickness=0,
+            childResizable=True,
+            parent=inner,
+        )
         self.library_grid = cmds.rowColumnLayout(
-            numberOfColumns=4,
-            columnWidth=[(1, 116), (2, 116), (3, 116), (4, 116)],
+            numberOfColumns=2,
+            columnWidth=[(1, 90), (2, 90)],
             rowSpacing=(1, 4), columnSpacing=(1, 4),
-            parent=col,
+            parent=grid_scroll,
         )
 
-        row = cmds.rowLayout(
+        # Save / refresh strip pinned to the bottom.
+        btn_row = cmds.rowLayout(
             numberOfColumns=2, adjustableColumn=1,
             columnAttach=[(1, "both", 2), (2, "both", 2)],
-            columnWidth2=(200, 80), parent=col,
+            columnWidth2=(140, 50), parent=inner,
         )
         cmds.button(
-            label="現在の選択をライブラリに保存",
+            label="選択毛束を保存",
             annotation=("選択中の毛束 (メッシュ / カーブ / sweep) を"
-                        "1 本、library ディレクトリに .ma として保存します。"
-                        "viewport から playblast でサムネイル (.png) も"
-                        "自動生成します。"),
-            command=self._on_save_to_library, parent=row,
+                        "1 本、library ディレクトリに .ma として保存し、"
+                        "playblast でサムネイル (.png) を生成します。"),
+            command=self._on_save_to_library, parent=btn_row,
         )
         cmds.button(
             label="更新",
-            annotation=("ライブラリを再スキャンしてグリッドを"
-                        "作り直します。"),
-            command=self._on_refresh_library, parent=row,
+            annotation="ライブラリを再スキャンしてグリッドを作り直します。",
+            command=self._on_refresh_library, parent=btn_row,
         )
         cmds.setParent("..")
+
+        cmds.formLayout(
+            inner, edit=True,
+            attachForm=[
+                (header, "top", 4),
+                (header, "left", 4),
+                (header, "right", 4),
+                (grid_scroll, "left", 0),
+                (grid_scroll, "right", 0),
+                (btn_row, "left", 4),
+                (btn_row, "right", 4),
+                (btn_row, "bottom", 4),
+            ],
+            attachControl=[
+                (grid_scroll, "top", 4, header),
+                (grid_scroll, "bottom", 4, btn_row),
+            ],
+        )
 
         self._refresh_library_grid()
 
@@ -1826,7 +1867,7 @@ class HairBuilderUI(object):
             btn = cmds.iconTextButton(
                 label=name,
                 image=image,
-                width=112, height=132,
+                width=86, height=106,
                 style="iconAndTextVertical",
                 annotation=("{0} をインポート — 右クリックで"
                             "メニュー".format(name)),
