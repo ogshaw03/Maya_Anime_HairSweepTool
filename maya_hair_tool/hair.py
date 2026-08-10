@@ -346,6 +346,106 @@ def set_group_color(group: str, rgb: tuple, apply_now: bool = True) -> None:
         _apply_group_color_via_vertex(group, rgb)
 
 
+def _group_color_view_state(group: str) -> Optional[bool]:
+    """Return True/False based on whether ``group`` is currently in
+    colour-view mode (any sibling strand has ``displayColors=1``).
+    Returns None when the group has no strands (empty group)."""
+    if cmds is None:
+        return None
+    strands = strands_under(group)
+    if not strands:
+        return None
+    for strand in strands:
+        shapes = cmds.listRelatives(
+            strand, shapes=True, type="mesh", fullPath=True) or []
+        for shape in shapes:
+            try:
+                if cmds.getAttr(shape + ".displayColors"):
+                    return True
+            except Exception:
+                pass
+    return False
+
+
+def _write_strand_vertex_color(mesh_xform: str, rgb: tuple,
+                                display: Optional[bool] = None) -> None:
+    """Write ``rgb`` into the ``hairGroupColorSet`` on this one
+    strand and optionally set ``displayColors``:
+
+    * ``display=True`` → turn colour view ON for this strand
+    * ``display=False`` → write colours but leave displayColors off
+      so the strand still shows its material
+    * ``display=None`` → leave displayColors as-is
+
+    Used by :func:`_apply_group_color_via_vertex` and by the
+    auto-colour hook in :func:`move_strand_to_group` /
+    :func:`create_hair_from_selected_curves`.
+    """
+    if cmds is None or not cmds.objExists(mesh_xform):
+        return
+    r, g, b = float(rgb[0]), float(rgb[1]), float(rgb[2])
+    shapes = cmds.listRelatives(
+        mesh_xform, shapes=True, type="mesh", fullPath=True) or []
+    for shape in shapes:
+        try:
+            existing = cmds.polyColorSet(
+                shape, query=True, allColorSets=True) or []
+            if C.GROUP_COLOR_SET not in existing:
+                cmds.polyColorSet(
+                    shape, create=True,
+                    colorSet=C.GROUP_COLOR_SET)
+            cmds.polyColorSet(
+                shape, currentColorSet=True,
+                colorSet=C.GROUP_COLOR_SET)
+            cmds.polyColorPerVertex(
+                shape, rgb=[r, g, b],
+                cdo=(True if display else False))
+            try:
+                cmds.setAttr(
+                    shape + ".displayColorChannel",
+                    C.GROUP_COLOR_SET, type="string")
+            except Exception:
+                pass
+            if display is not None:
+                cmds.setAttr(
+                    shape + ".displayColors",
+                    1 if display else 0)
+        except Exception as exc:
+            cmds.warning(
+                "[maya_hair_tool] vertex color 書込失敗 "
+                "({0}): {1}".format(shape, exc))
+
+
+def apply_group_color_to_strand(mesh_xform: str,
+                                  group: Optional[str] = None) -> bool:
+    """Apply the target ``group``'s colour to a single strand.
+    If ``group`` is None, uses the strand's current parent
+    (typically what you want when the strand has just been
+    re-parented). Sync's displayColors with sibling strands so the
+    new arrival matches the group's current view mode.
+
+    Returns True when a colour was applied, False otherwise
+    (group has no stored colour, or lookup failed)."""
+    if cmds is None or not cmds.objExists(mesh_xform):
+        return False
+    if group is None:
+        parents = cmds.listRelatives(
+            mesh_xform, parent=True, fullPath=True) or []
+        if not parents:
+            return False
+        group = parents[0]
+    rgb = get_group_color(group)
+    if rgb is None:
+        return False
+    # Match the group's current display state so the new strand
+    # doesn't force colour view on when siblings are showing
+    # materials (and vice-versa). Empty group → default ON.
+    state = _group_color_view_state(group)
+    display = True if state is None else state
+    _write_strand_vertex_color(mesh_xform, rgb, display=display)
+    return True
+
+
 def _apply_group_color_via_vertex(group: str, rgb: tuple) -> int:
     """Colour every strand in ``group`` by writing per-vertex RGB
     into a dedicated color set and enabling ``displayColors`` on
@@ -708,15 +808,29 @@ def move_strand_to_group(mesh_xform: str, group: Optional[str]) -> str:
             target = create_hair_group(group)
         else:
             target = group
+    new_path = mesh_xform
     try:
         result = cmds.parent(mesh_xform, target) or []
         if result:
-            return result[0]
+            new_path = result[0]
     except RuntimeError as exc:
         cmds.warning(
             "[maya_hair_tool] {0} を {1} へ移動できません: {2}".format(
                 mesh_xform, target, exc))
-    return mesh_xform
+        return mesh_xform
+
+    # If the destination group has a stored colour, auto-apply it
+    # to the newly-arrived strand so it visually joins the group
+    # right away. displayColors state is synced with sibling
+    # strands (see apply_group_color_to_strand).
+    if group:
+        try:
+            apply_group_color_to_strand(new_path, group=target)
+        except Exception as exc:
+            cmds.warning(
+                "[maya_hair_tool] グループ色 自動適用失敗: "
+                "{0}".format(exc))
+    return new_path
 
 
 def _unique_hair_name(curve: str) -> str:
