@@ -1681,23 +1681,52 @@ class HairBuilderUI(object):
         self._braid_live_apply("density_bottom", value, True)
 
     def _sync_create_panel_frames(self):
-        """Expand the braid frame + collapse the hair frame when the
-        current selection is a Braid_NN group (or one of its child
-        strands); expand hair + collapse braid otherwise. Both
-        frames stay ``collapsable=True`` so the user can override
-        manually if they want to work on the other kind."""
-        braid_owned = self._selected_braid_group() is not None
-        for frame, want_open in (
-            (getattr(self, "braid_frame", None), braid_owned),
-            (getattr(self, "hair_frame", None), not braid_owned),
+        """Hide the non-applicable Create-panel frame based on the
+        current selection so the user sees only the sliders that
+        will actually affect what's selected.
+
+        Rules:
+          * A braid-owned node selected (Braid_NN group or any of
+            its child strands) → braid frame only. The generic hair
+            sliders are hidden — they don't drive braid shape and
+            just add clutter.
+          * A non-braid hair strand selected → hair frame only.
+            The braid section is hidden since the selection isn't a
+            braid.
+          * Anything else (nothing selected, or raw curves the user
+            hasn't converted yet) → BOTH frames stay visible so
+            either creation button ("選択カーブから毛束を生成" or
+            "▶ 三つ編みを作成") is one click away.
+
+        Uses ``manage`` (not ``collapse``) so the hidden frame is
+        fully removed from the layout — leaves no title bar behind
+        for the user to reflexively expand.
+        """
+        braid_selected = self._selected_braid_group() is not None
+        hair_selected = False
+        if not braid_selected:
+            try:
+                hair_selected = bool(
+                    su.sweep_creators_from_selection() or [])
+            except Exception:
+                hair_selected = False
+        if braid_selected:
+            braid_vis, hair_vis = True, False
+        elif hair_selected:
+            braid_vis, hair_vis = False, True
+        else:
+            # Creation mode — need both entry points available.
+            braid_vis, hair_vis = True, True
+        for frame, want in (
+            (getattr(self, "braid_frame", None), braid_vis),
+            (getattr(self, "hair_frame", None), hair_vis),
         ):
             if not frame:
                 continue
             try:
                 if not cmds.frameLayout(frame, exists=True):
                     continue
-                cmds.frameLayout(
-                    frame, edit=True, collapse=not want_open)
+                cmds.frameLayout(frame, edit=True, manage=want)
             except Exception:
                 pass
 
