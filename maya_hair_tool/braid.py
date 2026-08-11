@@ -660,6 +660,90 @@ def _create_hair_tie(
     return torus_xform
 
 
+def _resolve_spine_transform(spine_curve: str) -> Optional[str]:
+    """Given a curve (shape or transform), return its transform's
+    full path. Constraints need to attach to a transform, not a
+    shape, and users occasionally hand us a shape by accident."""
+    if not spine_curve or not cmds.objExists(spine_curve):
+        return None
+    if cmds.nodeType(spine_curve) == "nurbsCurve":
+        parents = cmds.listRelatives(
+            spine_curve, parent=True, fullPath=True) or []
+        return parents[0] if parents else None
+    # Transform — verify it holds a nurbsCurve shape.
+    shapes = cmds.listRelatives(
+        spine_curve, shapes=True, fullPath=True,
+        type="nurbsCurve") or []
+    if shapes:
+        return spine_curve
+    return spine_curve
+
+
+def _constrain_braid_to_spine(
+    braid_group_geom: str,
+    spine_curve: str,
+) -> None:
+    """Attach ``parentConstraint``s so the whole Braid group follows
+    the spine's transform (translate / rotate) automatically.
+
+    This handles the common "I moved my spine and the braid stayed
+    behind" case. CV edits on the spine still don't update the
+    braid shape — that needs an explicit slider drag or re-create;
+    live-procedural reshaping was ruled out as too complex for
+    this pass (no custom plugin nodes per HANDOFF.md §11).
+
+    Constrains BOTH the geom-side Braid group and its curve-side
+    mirror so the strand curves come along too — the
+    sweepMeshCreator will then keep the meshes in sync with the
+    moved curves.
+    """
+    if not cmds.objExists(braid_group_geom):
+        return
+    spine_xform = _resolve_spine_transform(spine_curve)
+    if not spine_xform or not cmds.objExists(spine_xform):
+        return
+    try:
+        cmds.parentConstraint(
+            spine_xform, braid_group_geom,
+            maintainOffset=True, weight=1.0)
+    except Exception as exc:
+        cmds.warning(
+            "[maya_hair_tool] Braid geom 側 parentConstraint 失敗: "
+            "{0}".format(exc))
+    curve_side = hair._curve_group_side(braid_group_geom)
+    if curve_side and cmds.objExists(curve_side):
+        try:
+            cmds.parentConstraint(
+                spine_xform, curve_side,
+                maintainOffset=True, weight=1.0)
+        except Exception as exc:
+            cmds.warning(
+                "[maya_hair_tool] Braid curve 側 parentConstraint "
+                "失敗: {0}".format(exc))
+
+
+def _remove_existing_braid_constraints(braid_group_geom: str) -> None:
+    """Delete any parentConstraints currently driving the Braid
+    group (both sides). Called before a rebuild-time re-constrain
+    so the maintainOffset math doesn't accumulate stale offsets
+    across multiple rebuilds."""
+    for target in (braid_group_geom,
+                   hair._curve_group_side(braid_group_geom)):
+        if not target or not cmds.objExists(target):
+            continue
+        try:
+            constraints = cmds.listRelatives(
+                target, children=True, type="parentConstraint",
+                fullPath=True) or []
+        except Exception:
+            constraints = []
+        for c in constraints:
+            try:
+                cmds.delete(c)
+            except Exception:
+                pass
+
+
 def _delete_existing_tie(group: str) -> None:
     """Delete the hair-tie mesh referenced from the group's
     stored UUID (if any). No-op if the UUID is empty or the node
@@ -863,6 +947,12 @@ def rebuild_braid(group: str, **overrides) -> None:
         # No tail → no tie. Clear the stored UUID so we don't leave
         # stale metadata behind.
         _stamp_tie_uuid(group, "")
+
+    # Refresh the spine → braid parentConstraint so post-rebuild
+    # transforms stay linked. Removing first prevents multiple
+    # stacked constraints when the user rebuilds repeatedly.
+    _remove_existing_braid_constraints(group)
+    _constrain_braid_to_spine(group, spine_curve)
 
 
 def _next_braid_group_name() -> str:
@@ -1133,6 +1223,13 @@ def create_braid_from_spine(
             tie_uuids = cmds.ls(tie_xform, uuid=True) or []
             if tie_uuids:
                 _stamp_tie_uuid(stamp_target, tie_uuids[0])
+
+        # Constrain the Braid group (both sides) to the spine
+        # transform so moving the spine drags the whole braid with
+        # it. Skip when we couldn't materialise the group (no way
+        # to attach the constraint).
+        if stamp_target and cmds.objExists(stamp_target):
+            _constrain_braid_to_spine(stamp_target, spine_curve)
 
         if strand_meshes:
             try:
