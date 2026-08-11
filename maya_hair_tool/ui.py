@@ -937,28 +937,36 @@ class HairBuilderUI(object):
                    "ストランドが生成され、自動で Braid_NN グループに"
                    "まとめられます。各ストランドは通常の毛束と同じ"
                    "スライダー / グループ調整ができます。\n"
-                   "※ 生成後にスパインカーブを編集しても三つ編みは"
-                   "追従しません。作り直す場合は再度ボタンを押して"
-                   "ください (前回分は Ctrl+Z で戻せます)。"),
+                   "※ 生成後は Braid_NN グループを選択すると、"
+                   "以下 4 スライダーがその三つ編みの現在値を"
+                   "表示し、ドラッグでリアルタイム反映します "
+                   "(スパインカーブが残っている前提)。"),
             align="left", parent=braid_col,
             font="smallObliqueLabelFont", wordWrap=True,
         )
+        # Live-edit callbacks: drag = no undo recording (many
+        # micro-updates), change = single undo chunk. Matches the
+        # pattern used by the normal-hair sliders.
         self.braid_turns = _slider_with_reset(
             braid_col, "編みの周期 (Turns per Length)",
             C.DEFAULT_BRAID_TURNS_PER_LENGTH, 0.05, 3.0,
-            drag_cb=None, change_cb=None)
+            drag_cb=self._cb_braid_turns_drag,
+            change_cb=self._cb_braid_turns_change)
         self.braid_radius = _slider_with_reset(
             braid_col, "編みの太さ (Braid Radius)",
             C.DEFAULT_BRAID_RADIUS, 0.05, 5.0,
-            drag_cb=None, change_cb=None)
+            drag_cb=self._cb_braid_radius_drag,
+            change_cb=self._cb_braid_radius_change)
         self.braid_thickness = _slider_with_reset(
             braid_col, "ストランド 1 本の太さ (Strand Thickness)",
             C.DEFAULT_BRAID_STRAND_THICKNESS, 0.01, 3.0,
-            drag_cb=None, change_cb=None)
+            drag_cb=self._cb_braid_thickness_drag,
+            change_cb=self._cb_braid_thickness_change)
         self.braid_tip_taper = _slider_with_reset(
             braid_col, "先細り (Tip Taper 0-1)",
             C.DEFAULT_BRAID_TIP_TAPER, 0.0, 1.0,
-            drag_cb=None, change_cb=None)
+            drag_cb=self._cb_braid_tip_taper_drag,
+            change_cb=self._cb_braid_tip_taper_change)
         cmds.button(
             label="▶ 三つ編みを作成",
             height=32,
@@ -1252,6 +1260,15 @@ class HairBuilderUI(object):
         if self._adjust_mode == "absolute":
             self._sync_taper_editor_from_creator()
 
+        # Braid sliders — if the current selection maps back to a
+        # Braid_NN group, populate the 4 braid sliders with that
+        # group's stored params so the sliders reflect what they'll
+        # affect on the next drag.
+        try:
+            self._sync_braid_sliders_from_selection()
+        except Exception:
+            pass
+
     # -----------------------------------------------------------------
     # Inline taper curve editor (gradientControlNoAttr wrapper)
     # -----------------------------------------------------------------
@@ -1434,6 +1451,108 @@ class HairBuilderUI(object):
             cmds.warning("[maya_hair_tool] 三つ編み生成失敗: {0}".format(exc))
             return
         self._refresh_hair_list()
+
+    # -----------------------------------------------------------------
+    # Braid live-edit callbacks
+    #
+    # When the current selection maps back to a Braid_NN group, each
+    # slider change rebuilds that braid in-place: the 3 strand
+    # curves' CVs are recomputed and set via ``curve -replace``, and
+    # sweepMeshCreator auto-follows. Strand thickness is written
+    # directly to each creator's ``scaleProfileX`` for the same
+    # visual immediacy as normal-hair thickness edits.
+    #
+    # When no braid is selected, the callbacks no-op — the sliders
+    # still hold the values used by the next "▶ 三つ編みを作成" click.
+    # -----------------------------------------------------------------
+    def _selected_braid_group(self):
+        """Return the geometry-side Braid_NN group path for the
+        currently-selected node (which may be the group itself, one
+        of its strand meshes, or a guide curve), or None."""
+        sel = cmds.ls(selection=True, long=True) or []
+        for s in sel:
+            g = braid.find_containing_braid_group(s)
+            if g:
+                return g
+        return None
+
+    def _braid_live_apply(self, param_name, value, record_undo):
+        if self._syncing_sliders:
+            return
+        group = self._selected_braid_group()
+        if not group:
+            return  # sliders are in "next-create" mode; leave alone
+        if record_undo:
+            cmds.undoInfo(openChunk=True, chunkName="braidLiveEdit")
+        try:
+            braid.rebuild_braid(group, **{param_name: float(value)})
+        except Exception as exc:
+            cmds.warning(
+                "[maya_hair_tool] Braid rebuild 失敗: {0}".format(exc))
+        finally:
+            if record_undo:
+                cmds.undoInfo(closeChunk=True)
+
+    # dragCommand — many mid-drag updates, undo suppressed so the
+    # stack doesn't flood.
+    def _cb_braid_turns_drag(self, value):
+        self._braid_live_apply("turns_per_length", value, False)
+
+    def _cb_braid_radius_drag(self, value):
+        self._braid_live_apply("radius", value, False)
+
+    def _cb_braid_thickness_drag(self, value):
+        self._braid_live_apply("strand_thickness", value, False)
+
+    def _cb_braid_tip_taper_drag(self, value):
+        self._braid_live_apply("tip_taper", value, False)
+
+    # changeCommand — final value on drag end / field entry;
+    # wrapped in one undo chunk so Ctrl+Z rolls the drag back as
+    # a single step.
+    def _cb_braid_turns_change(self, value):
+        self._braid_live_apply("turns_per_length", value, True)
+
+    def _cb_braid_radius_change(self, value):
+        self._braid_live_apply("radius", value, True)
+
+    def _cb_braid_thickness_change(self, value):
+        self._braid_live_apply("strand_thickness", value, True)
+
+    def _cb_braid_tip_taper_change(self, value):
+        self._braid_live_apply("tip_taper", value, True)
+
+    def _sync_braid_sliders_from_selection(self):
+        """Populate the 4 braid sliders with the stored values of
+        the currently-selected Braid group. Called from the
+        SelectionChanged scriptJob so re-selecting a braid restores
+        its edit state visually. If no braid is selected the
+        sliders keep their current values (they act as the "next-
+        create" defaults)."""
+        group = self._selected_braid_group()
+        if not group:
+            return
+        params = braid.read_braid_params(group)
+        if not params:
+            return
+        self._syncing_sliders = True
+        try:
+            cmds.floatSliderGrp(
+                self.braid_turns, edit=True,
+                value=params["turns_per_length"])
+            cmds.floatSliderGrp(
+                self.braid_radius, edit=True,
+                value=params["radius"])
+            cmds.floatSliderGrp(
+                self.braid_thickness, edit=True,
+                value=params["strand_thickness"])
+            cmds.floatSliderGrp(
+                self.braid_tip_taper, edit=True,
+                value=params["tip_taper"])
+        except Exception:
+            pass
+        finally:
+            self._syncing_sliders = False
 
     # -----------------------------------------------------------------
     # Live-edit callbacks (Create panel sliders → selected strands)

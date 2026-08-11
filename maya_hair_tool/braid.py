@@ -318,6 +318,252 @@ def _cleanup_partial_braid(
             pass
 
 
+# --------------------------------------------------------------------------- #
+# Braid metadata (stamped on the group transform so we can re-sync
+# sliders on selection and live-rebuild the braid when they change).
+# --------------------------------------------------------------------------- #
+
+_ATTR_MARKER = "isBraidGroup"        # bool, tags the group as a braid
+_ATTR_SPINE_UUID = "braidSpineUuid"  # str, spine curve UUID
+_ATTR_STRAND_UUIDS = "braidStrandMeshUuids"  # str, pipe-joined mesh UUIDs
+_ATTR_TURNS = "braidTurnsPerLength"
+_ATTR_RADIUS = "braidRadius"
+_ATTR_THICKNESS = "braidStrandThickness"
+_ATTR_TIP_TAPER = "braidTipTaper"
+_ATTR_DEPTH_RATIO = "braidDepthRatio"
+
+
+def _ensure_bool_attr(node: str, attr: str) -> None:
+    if not cmds.attributeQuery(attr, node=node, exists=True):
+        cmds.addAttr(node, longName=attr, attributeType="bool")
+
+
+def _ensure_str_attr(node: str, attr: str) -> None:
+    if not cmds.attributeQuery(attr, node=node, exists=True):
+        cmds.addAttr(node, longName=attr, dataType="string")
+
+
+def _ensure_float_attr(node: str, attr: str) -> None:
+    if not cmds.attributeQuery(attr, node=node, exists=True):
+        cmds.addAttr(node, longName=attr, attributeType="float")
+
+
+def _stamp_braid_params(
+    group: str,
+    spine_uuid: str,
+    strand_mesh_uuids: List[str],
+    params: dict,
+) -> None:
+    """Write the params used to build a braid onto the group transform
+    so the UI can (a) re-populate sliders when the group is selected
+    and (b) rebuild the braid in-place when a slider changes."""
+    _ensure_bool_attr(group, _ATTR_MARKER)
+    cmds.setAttr(group + "." + _ATTR_MARKER, True)
+    _ensure_str_attr(group, _ATTR_SPINE_UUID)
+    cmds.setAttr(
+        group + "." + _ATTR_SPINE_UUID, spine_uuid, type="string")
+    _ensure_str_attr(group, _ATTR_STRAND_UUIDS)
+    cmds.setAttr(
+        group + "." + _ATTR_STRAND_UUIDS,
+        "|".join(strand_mesh_uuids), type="string")
+    for attr, key in (
+        (_ATTR_TURNS, "turns_per_length"),
+        (_ATTR_RADIUS, "radius"),
+        (_ATTR_THICKNESS, "strand_thickness"),
+        (_ATTR_TIP_TAPER, "tip_taper"),
+        (_ATTR_DEPTH_RATIO, "depth_ratio"),
+    ):
+        _ensure_float_attr(group, attr)
+        cmds.setAttr(group + "." + attr, float(params[key]))
+
+
+def is_braid_group(node: str) -> bool:
+    """Fast check whether ``node`` is a Braid group."""
+    if cmds is None or not node or not cmds.objExists(node):
+        return False
+    return bool(cmds.attributeQuery(
+        _ATTR_MARKER, node=node, exists=True))
+
+
+def read_braid_params(group: str) -> Optional[dict]:
+    """Return the stored braid metadata dict, or None if the group
+    isn't a Braid group. Dict keys mirror ``create_braid_from_spine``
+    kwargs plus ``spine_uuid`` and ``strand_mesh_uuids``."""
+    if not is_braid_group(group):
+        return None
+    try:
+        uuids_str = cmds.getAttr(group + "." + _ATTR_STRAND_UUIDS) or ""
+        return {
+            "spine_uuid":
+                cmds.getAttr(group + "." + _ATTR_SPINE_UUID) or "",
+            "strand_mesh_uuids":
+                [u for u in uuids_str.split("|") if u],
+            "turns_per_length":
+                float(cmds.getAttr(group + "." + _ATTR_TURNS)),
+            "radius": float(cmds.getAttr(group + "." + _ATTR_RADIUS)),
+            "strand_thickness":
+                float(cmds.getAttr(group + "." + _ATTR_THICKNESS)),
+            "tip_taper":
+                float(cmds.getAttr(group + "." + _ATTR_TIP_TAPER)),
+            "depth_ratio":
+                float(cmds.getAttr(group + "." + _ATTR_DEPTH_RATIO)),
+        }
+    except Exception:
+        return None
+
+
+def find_containing_braid_group(node: str) -> Optional[str]:
+    """Given any node (a braid group itself, a strand mesh under it,
+    or a strand curve under its Curve_group side), return the geom-
+    side Braid group full path — or None if we can't map back to one.
+    """
+    if cmds is None or not node or not cmds.objExists(node):
+        return None
+    if is_braid_group(node):
+        return node
+    # Walk parents up to at most 4 levels (strand mesh → user group →
+    # Geometry_group → HairGroup).
+    cur = node
+    for _ in range(4):
+        parents = cmds.listRelatives(
+            cur, parent=True, fullPath=True) or []
+        if not parents:
+            break
+        cur = parents[0]
+        if is_braid_group(cur):
+            return cur
+    return None
+
+
+def _find_strand_curves_for_rebuild(
+    strand_mesh_uuids: List[str],
+) -> List[str]:
+    """Look up the guide curve for each stored mesh UUID, preserving
+    order. Empty entries where the UUID no longer resolves."""
+    curves: List[str] = []
+    for uid in strand_mesh_uuids:
+        mesh_matches = cmds.ls(uid) or []
+        if not mesh_matches:
+            curves.append("")
+            continue
+        creators = su.sweep_creators_from_nodes([mesh_matches[0]]) or []
+        if not creators:
+            curves.append("")
+            continue
+        curve = su.curve_from_creator(creators[0])
+        curves.append(curve or "")
+    return curves
+
+
+def _replace_curve_cvs(curve: str, points: List[Vec3]) -> None:
+    """Replace the CVs of an existing NURBS curve in-place using
+    ``cmds.curve(replace=True)``. The connected sweepMeshCreator
+    picks up the change automatically."""
+    cmds.curve(curve, replace=True, point=points,
+               degree=3 if len(points) >= 4 else 1)
+
+
+def rebuild_braid(group: str, **overrides) -> None:
+    """Live-rebuild the 3 strand curves of a Braid group using the
+    stored params plus any ``overrides``. sweepMeshCreator auto-
+    updates from the modified curves. Also propagates
+    ``strand_thickness`` to each sweepMeshCreator's width attr so
+    the change is visible without a full curve rebuild.
+
+    Raises RuntimeError if the group isn't a braid, if the spine
+    can't be located (deleted / renamed away from its UUID), or if
+    fewer than 3 strand curves are recoverable.
+    """
+    params = read_braid_params(group)
+    if params is None:
+        raise RuntimeError(
+            "Braid metadata が見つかりません: {0}".format(group))
+    params.update(overrides)
+
+    spine_matches = cmds.ls(params["spine_uuid"]) or []
+    if not spine_matches:
+        raise RuntimeError(
+            "スパインカーブが見つかりません (削除された可能性)。UUID: "
+            "{0}".format(params["spine_uuid"]))
+    spine_curve = spine_matches[0]
+
+    curves = _find_strand_curves_for_rebuild(
+        params["strand_mesh_uuids"])
+    live_curves = [c for c in curves if c and cmds.objExists(c)]
+    if len(live_curves) < 3:
+        raise RuntimeError(
+            "Braid ストランドカーブが 3 本揃っていません (現在 {0} 本)。"
+            "ストランドが手動削除された可能性があります。".format(
+                len(live_curves)))
+
+    # Recompute frames using the same Nyquist bump as fresh creation.
+    num_samples = C.DEFAULT_BRAID_SAMPLES
+    coarse = _sample_positions(spine_curve, num_samples)
+    spine_length = _arc_length(coarse)
+    if spine_length < 1e-6:
+        raise RuntimeError(
+            "スパインカーブの長さがゼロ相当のため rebuild できません。")
+    total_turns = params["turns_per_length"] * spine_length
+    required = int(math.ceil(
+        abs(total_turns) * C.BRAID_SAMPLES_PER_TURN))
+    if required > num_samples:
+        num_samples = required
+        positions = _sample_positions(spine_curve, num_samples)
+    else:
+        positions = coarse
+    tangents = _tangents_from_positions(positions)
+    normals, binormals = _parallel_transport_frames(tangents)
+
+    # Update each strand curve's CVs and propagate thickness.
+    for idx, curve in enumerate(curves[:3]):
+        if not curve or not cmds.objExists(curve):
+            continue
+        phase = 2.0 * math.pi * (float(idx) / 3.0)
+        # Reuse the same maths as fresh creation via _build_strand_curve —
+        # but that helper *creates* a curve. We want to *replace* one.
+        # So compute the points inline.
+        n = len(positions)
+        points: List[Vec3] = []
+        for j in range(n):
+            u = float(j) / float(n - 1)
+            theta = phase + 2.0 * math.pi * total_turns * u
+            taper = max(0.0, 1.0 - params["tip_taper"] * u)
+            w = params["radius"] * math.sin(theta) * taper
+            d = (params["radius"] * params["depth_ratio"]
+                 * math.sin(2.0 * theta) * taper)
+            N = normals[j]
+            B = binormals[j]
+            points.append((
+                positions[j][0] + w * N[0] + d * B[0],
+                positions[j][1] + w * N[1] + d * B[1],
+                positions[j][2] + w * N[2] + d * B[2],
+            ))
+        _replace_curve_cvs(curve, points)
+
+    # Propagate strand_thickness to each mesh's sweepMeshCreator.
+    thickness = params["strand_thickness"]
+    for uid in params["strand_mesh_uuids"]:
+        mesh_matches = cmds.ls(uid) or []
+        if not mesh_matches:
+            continue
+        creators = su.sweep_creators_from_nodes(
+            [mesh_matches[0]]) or []
+        for c in creators:
+            # Match hair.py's thickness convention: uniform=True +
+            # scaleProfileX carries the value (scaleProfileY follows
+            # via the uniform toggle).
+            try:
+                cmds.setAttr(c + ".scaleProfileUniform", True)
+                cmds.setAttr(c + ".scaleProfileX", thickness)
+            except Exception:
+                pass
+
+    # Update stored params so the next slider change reads current.
+    _stamp_braid_params(
+        group, params["spine_uuid"],
+        params["strand_mesh_uuids"], params)
+
+
 def _next_braid_group_name() -> str:
     """Return the next available ``Braid_NN`` name (scans existing
     hair groups so the numbering doesn't reuse a deleted slot's
@@ -509,6 +755,43 @@ def create_braid_from_spine(
                             "グループへ移動失敗: {0}".format(exc))
                         moved.append(m)
                 strand_meshes = moved
+
+        # Stamp braid metadata on the geom-side group so the UI can
+        # sync sliders + live-rebuild when the group is re-selected.
+        # Falls back to per-strand attributes if grouping was disabled
+        # so the same lookup helpers still work.
+        spine_uuid = ""
+        try:
+            uuids = cmds.ls(spine_curve, uuid=True) or []
+            if uuids:
+                spine_uuid = uuids[0]
+        except Exception:
+            pass
+        strand_mesh_uuids: List[str] = []
+        for m in strand_meshes:
+            try:
+                mu = cmds.ls(m, uuid=True) or []
+                if mu:
+                    strand_mesh_uuids.append(mu[0])
+            except Exception:
+                pass
+        params_dict = {
+            "turns_per_length": turns_per_length,
+            "radius": radius,
+            "strand_thickness": strand_thickness,
+            "tip_taper": tip_taper,
+            "depth_ratio": depth_ratio,
+        }
+        stamp_target = None
+        if group and strand_meshes:
+            parents = cmds.listRelatives(
+                strand_meshes[0], parent=True, fullPath=True) or []
+            if parents:
+                stamp_target = parents[0]
+        if stamp_target and cmds.objExists(stamp_target):
+            _stamp_braid_params(
+                stamp_target, spine_uuid,
+                strand_mesh_uuids, params_dict)
 
         if strand_meshes:
             try:
