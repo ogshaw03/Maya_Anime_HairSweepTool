@@ -1922,28 +1922,36 @@ class HairBuilderUI(object):
     #   触るのが分かりやすい。
     # 長さ分割数: interpolationPrecision (interpolationMode が既定
     #   の "Precision" の場合に有効)。
+    # NOTE: subdiv sliders are ALWAYS absolute — even in the group
+    # relative-multiplier mode. The multiplier semantic makes no
+    # sense for a "count" (「分割数 × 2」 = "each strand's count
+    # doubles" is a surprising interpretation; users read the
+    # slider as "分割数 = N" and expect N to be written to every
+    # selected strand). Using ``_set_attr_absolute`` matches the
+    # profile-specific sliders (星頂点数 etc.) that face the same
+    # issue.
     def _cb_subdiv_axis_drag(self, *_):
         self._live_apply(
-            self._set_attr(
+            self._set_attr_absolute(
                 "profilePolySides", _read_int(self.subdiv_axis), cast=int),
             record_undo=False)
 
     def _cb_subdiv_axis_change(self, *_):
         self._live_apply(
-            self._set_attr(
+            self._set_attr_absolute(
                 "profilePolySides", _read_int(self.subdiv_axis), cast=int),
             record_undo=True)
 
     def _cb_subdiv_length_drag(self, *_):
         self._live_apply(
-            self._set_attr(
+            self._set_attr_absolute(
                 "interpolationPrecision", _read_int(self.subdiv_length),
                 cast=float),
             record_undo=False)
 
     def _cb_subdiv_length_change(self, *_):
         self._live_apply(
-            self._set_attr(
+            self._set_attr_absolute(
                 "interpolationPrecision", _read_int(self.subdiv_length),
                 cast=float),
             record_undo=True)
