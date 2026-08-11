@@ -254,6 +254,13 @@ def _cumulative_density(u: float, top: float, middle: float,
     return first_half + middle * ou + (bottom - middle) * ou * ou
 
 
+_BRAID_TIE_SQUEEZE_ZONE = 0.10  # fraction of the spine over which the
+                                # elastic-squeeze applies (right before tie_off)
+_BRAID_TIE_SQUEEZE_TARGET = 0.30  # radius multiplier at exactly tie_off —
+                                  # matches the tail's pinch value so the
+                                  # braid → tail transition reads continuous
+
+
 def _strand_offset_at(
     u: float,
     phase_base: float,
@@ -264,15 +271,35 @@ def _strand_offset_at(
     density_top: float,
     density_middle: float,
     density_bottom: float,
+    tail_length: float = 0.0,
 ) -> tuple:
     """Return the (width, depth) offset in the (N, B) plane for
     one BRAID (woven) strand at parameter u ∈ [0, 1]. The braid
     region only — the tail below the tie is handled by separate
-    strands built via ``_build_tail_strand_curve``."""
+    strands built via ``_build_tail_strand_curve``.
+
+    When ``tail_length > 0`` an additional "tie squeeze" pinches
+    the braid inward over the last ``_BRAID_TIE_SQUEEZE_ZONE`` of
+    the spine so the woven strands narrow down to the tail's
+    starting radius. Without this the braid arrives at full width
+    at tie_off and then the tail starts at 30% width — a visible
+    step where the elastic sits. Matching the two makes the
+    elastic look like it's actually squeezing the hair through it.
+    """
     cum = _cumulative_density(
         u, density_top, density_middle, density_bottom)
     theta = phase_base + 2.0 * math.pi * turns * cum
     taper = max(0.0, 1.0 - tip_taper * u)
+    # Elastic squeeze — see docstring.
+    if tail_length > 1e-4:
+        tie_off = 1.0 - max(0.0, min(0.99, tail_length))
+        squeeze_start = tie_off - _BRAID_TIE_SQUEEZE_ZONE
+        if u >= squeeze_start:
+            span = max(1e-6, tie_off - squeeze_start)
+            t = max(0.0, min(1.0, (u - squeeze_start) / span))
+            # 1.0 at squeeze_start → SQUEEZE_TARGET at tie_off.
+            squeeze = 1.0 - (1.0 - _BRAID_TIE_SQUEEZE_TARGET) * t
+            taper *= squeeze
     w = radius * math.sin(theta) * taper
     d = radius * depth_ratio * math.sin(2.0 * theta) * taper
     return w, d
@@ -303,12 +330,13 @@ def _sample_frame_interpolated(u, positions, normals, binormals):
 def _append_endpoint_at(points, positions, normals, binormals,
                          u, phase_base, turns, radius, tip_taper,
                          depth_ratio, density_top, density_middle,
-                         density_bottom):
+                         density_bottom, tail_length=0.0):
     p, N, B = _sample_frame_interpolated(
         u, positions, normals, binormals)
     w, d = _strand_offset_at(
         u, phase_base, turns, radius, tip_taper, depth_ratio,
-        density_top, density_middle, density_bottom)
+        density_top, density_middle, density_bottom,
+        tail_length=tail_length)
     points.append((
         p[0] + w * N[0] + d * B[0],
         p[1] + w * N[1] + d * B[1],
@@ -397,7 +425,8 @@ def _build_strand_curve(
             break  # braid strand ends at the tie; tail is separate
         w, d = _strand_offset_at(
             u, phase_base, turns, radius, tip_taper, depth_ratio,
-            density_top, density_middle, density_bottom)
+            density_top, density_middle, density_bottom,
+            tail_length=tail_length)
         N = normals[i]
         B = binormals[i]
         offset = (
@@ -413,7 +442,8 @@ def _build_strand_curve(
         _append_endpoint_at(
             points, positions, normals, binormals, tie_off,
             phase_base, turns, radius, tip_taper, depth_ratio,
-            density_top, density_middle, density_bottom)
+            density_top, density_middle, density_bottom,
+            tail_length=tail_length)
 
     # Guard against tail_length so large that the braid region
     # produces fewer than 2 points — cmds.curve needs at least
@@ -1404,6 +1434,7 @@ def rebuild_braid(group: str, **overrides) -> None:
                 params["density_top"],
                 params["density_middle"],
                 params["density_bottom"],
+                tail_length=params["tail_length"],
             )
             N = normals[j]
             B = binormals[j]
@@ -1420,7 +1451,8 @@ def rebuild_braid(group: str, **overrides) -> None:
                 phase, total_turns, params["radius"],
                 params["tip_taper"], params["depth_ratio"],
                 params["density_top"], params["density_middle"],
-                params["density_bottom"])
+                params["density_bottom"],
+                tail_length=params["tail_length"])
         if len(points) < 2:
             # Degenerate tail_length ≈ 1.0 leaves the braid with
             # nothing to draw; skip this strand rather than fail
