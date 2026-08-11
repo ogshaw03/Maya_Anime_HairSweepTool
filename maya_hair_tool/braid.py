@@ -349,8 +349,8 @@ def _tail_shape(t: float) -> float:
     thins it out.
     """
     tie_continuity = 1.0
-    pinch = 0.35
-    tip_spread = 0.40
+    pinch = 0.25
+    tip_spread = 0.15
     pinch_end = 0.15
     if t <= 0.0:
         return tie_continuity

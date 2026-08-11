@@ -108,8 +108,8 @@ BRAID_GROUP_PREFIX = "Braid_"
 # (see BRAID_STRAND_SUBDIV_LENGTH) so the mesh follows the twist
 # smoothly instead of appearing as a chain of angular blocks.
 DEFAULT_BRAID_TURNS_PER_LENGTH = 0.5   # ~5 full turns over a 10-unit spine
-DEFAULT_BRAID_RADIUS = 0.8             # offset from spine to each strand centre
-DEFAULT_BRAID_STRAND_THICKNESS = 0.3   # per-strand mesh thickness (~37% of radius)
+DEFAULT_BRAID_RADIUS = 0.5             # offset from spine to each strand centre
+DEFAULT_BRAID_STRAND_THICKNESS = 0.2   # per-strand mesh thickness (~40% of radius)
 DEFAULT_BRAID_TIP_TAPER = 0.6          # 0=constant radius, 1=radius→0 at tip
 # Depth ratio — how deep the over/under crossings sit relative to the
 # braid's side-to-side width. Real hair braids are essentially flat
