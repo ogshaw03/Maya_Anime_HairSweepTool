@@ -292,12 +292,45 @@ def _strand_offset_at(
 
     if tie_off >= 1.0 or u < tie_off:
         return _braid_wd(u)
-    # Tail region.
+    # Tail region — see ``_tail_shape`` for the pinch → bulge → tip
+    # multiplier explanation.
     w_tie, d_tie = _braid_wd(tie_off)
     tail_span = 1.0 - tie_off
     tail_progress = (u - tie_off) / max(1e-9, tail_span)
-    tail_taper = max(0.0, 1.0 - tail_progress)
-    return w_tie * tail_taper, d_tie * tail_taper
+    shape = _tail_shape(tail_progress)
+    return w_tie * shape, d_tie * shape
+
+
+def _tail_shape(t: float) -> float:
+    """Radius multiplier along the tail (t = 0 at the tie, 1 at the
+    spine tip). Real hair braids tied with an elastic show:
+
+    * t = 0 : strand thickness matches the last woven point (1.0 —
+      continuity with the braid region)
+    * ~0.1  : sharp pinch to ``TAIL_PINCH`` where the elastic
+      squeezes the strands together
+    * ~0.4  : bulge out to ``TAIL_BULGE`` where the freed strands
+      splay open beyond the elastic
+    * 1.0   : 0, so each strand tapers to its own point
+
+    Piecewise-linear for cheap analytic evaluation; the four knots
+    give the classic tassel silhouette without needing bezier
+    control.
+    """
+    pinch = 0.20
+    bulge = 1.30
+    if t <= 0.0:
+        return 1.0
+    if t >= 1.0:
+        return 0.0
+    if t <= 0.1:
+        u = t / 0.1
+        return 1.0 + (pinch - 1.0) * u
+    if t <= 0.4:
+        u = (t - 0.1) / 0.3
+        return pinch + (bulge - pinch) * u
+    u = (t - 0.4) / 0.6
+    return bulge * (1.0 - u)
 
 
 def _build_strand_curve(
@@ -427,6 +460,7 @@ _ATTR_TAIL_LENGTH = "braidTailLength"
 _ATTR_DENSITY_TOP = "braidDensityTop"
 _ATTR_DENSITY_MIDDLE = "braidDensityMiddle"
 _ATTR_DENSITY_BOTTOM = "braidDensityBottom"
+_ATTR_TIE_UUID = "braidHairTieUuid"      # UUID of the elastic torus mesh
 
 
 def _ensure_bool_attr(node: str, attr: str) -> None:
@@ -442,6 +476,15 @@ def _ensure_str_attr(node: str, attr: str) -> None:
 def _ensure_float_attr(node: str, attr: str) -> None:
     if not cmds.attributeQuery(attr, node=node, exists=True):
         cmds.addAttr(node, longName=attr, attributeType="float")
+
+
+def _stamp_tie_uuid(group: str, tie_uuid: str) -> None:
+    """Stamp the hair-tie mesh's UUID on the group so rebuild can
+    find it later. Called separately from ``_stamp_braid_params``
+    because the tie is (re)created after the params are stamped."""
+    _ensure_str_attr(group, _ATTR_TIE_UUID)
+    cmds.setAttr(group + "." + _ATTR_TIE_UUID, tie_uuid or "",
+                 type="string")
 
 
 def _stamp_braid_params(
@@ -530,9 +573,110 @@ def read_braid_params(group: str) -> Optional[dict]:
             "density_bottom":
                 _read_float_or(_ATTR_DENSITY_BOTTOM,
                                C.DEFAULT_BRAID_DENSITY_BOTTOM),
+            "tie_uuid":
+                (cmds.getAttr(group + "." + _ATTR_TIE_UUID) or ""
+                 if cmds.attributeQuery(_ATTR_TIE_UUID, node=group,
+                                        exists=True)
+                 else ""),
         }
     except Exception:
         return None
+
+
+def _sample_spine_frame_at(spine_curve: str, u: float) -> tuple:
+    """Return (position, tangent, normal, binormal) at normalised
+    parameter ``u`` (0..1) along the spine curve. Used by the
+    hair-tie placement — we don't need the whole per-sample frame
+    array, just the values at one point."""
+    mn, mx = _spine_param_range(spine_curve)
+    param = mn + (mx - mn) * max(0.0, min(1.0, u))
+    p_here = cmds.pointOnCurve(spine_curve, parameter=param,
+                                position=True)
+    # Tangent via a small finite-difference around param.
+    span = mx - mn
+    d = max(1e-6, span * 1e-3)
+    p0 = cmds.pointOnCurve(
+        spine_curve,
+        parameter=max(mn, param - d),
+        position=True)
+    p1 = cmds.pointOnCurve(
+        spine_curve,
+        parameter=min(mx, param + d),
+        position=True)
+    T = _normalize((p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2]))
+    if _length(T) < 1e-6:
+        T = (0.0, 1.0, 0.0)
+    # Arbitrary perpendicular normal.
+    ref = (0.0, 1.0, 0.0) if abs(T[1]) < 0.9 else (1.0, 0.0, 0.0)
+    N = _normalize(_cross(ref, T))
+    if _length(N) < 1e-6:
+        N = _normalize(_cross((1.0, 0.0, 0.0), T))
+    B = _normalize(_cross(T, N))
+    pos = (float(p_here[0]), float(p_here[1]), float(p_here[2]))
+    return pos, T, N, B
+
+
+def _create_hair_tie(
+    spine_curve: str,
+    tail_length: float,
+    braid_radius: float,
+    name: str,
+) -> Optional[str]:
+    """Build a small torus around the spine at the tie point
+    (u = 1 − tail_length) oriented so the torus axis follows the
+    spine tangent. Returns the transform's full path, or None when
+    ``tail_length`` is effectively zero (no tail, no tie needed).
+    """
+    if tail_length <= 1e-4:
+        return None
+    tie_off = max(0.0, min(0.99, 1.0 - tail_length))
+    pos, T, N, B = _sample_spine_frame_at(spine_curve, tie_off)
+    # Snug around the pinched strands: their max radial offset at
+    # pinch ≈ braid_radius × TAIL_PINCH; tie sits just outside that.
+    tie_major_r = float(braid_radius) * 0.30
+    tie_section_r = float(braid_radius) * 0.06
+    torus = cmds.polyTorus(
+        radius=tie_major_r,
+        sectionRadius=tie_section_r,
+        subdivisionsAxis=16,
+        subdivisionsHeight=8,
+        name=name,
+    )
+    torus_xform = torus[0]
+    # Default polyTorus axis is +Y — build a world matrix that maps
+    # the torus's local Y onto the spine tangent T and place it at
+    # the tie point. N / B fill the perpendicular axes so the
+    # torus is orthonormally oriented.
+    matrix = [
+        N[0], N[1], N[2], 0.0,
+        T[0], T[1], T[2], 0.0,
+        B[0], B[1], B[2], 0.0,
+        pos[0], pos[1], pos[2], 1.0,
+    ]
+    try:
+        cmds.xform(torus_xform, matrix=matrix, worldSpace=True)
+    except Exception:
+        pass
+    return torus_xform
+
+
+def _delete_existing_tie(group: str) -> None:
+    """Delete the hair-tie mesh referenced from the group's
+    stored UUID (if any). No-op if the UUID is empty or the node
+    has already been removed."""
+    if not cmds.attributeQuery(_ATTR_TIE_UUID, node=group,
+                                exists=True):
+        return
+    tie_uuid = cmds.getAttr(group + "." + _ATTR_TIE_UUID) or ""
+    if not tie_uuid:
+        return
+    matches = cmds.ls(tie_uuid) or []
+    for n in matches:
+        if cmds.objExists(n):
+            try:
+                cmds.delete(n)
+            except Exception:
+                pass
 
 
 def find_containing_braid_group(node: str) -> Optional[str]:
@@ -695,6 +839,30 @@ def rebuild_braid(group: str, **overrides) -> None:
     _stamp_braid_params(
         group, params["spine_uuid"],
         params["strand_mesh_uuids"], params)
+
+    # Hair tie — replace in-place so radius / position stay in sync
+    # with the current params. Delete any existing tie, then build a
+    # fresh one if the current tail_length calls for it. Reuse the
+    # already-resolved ``spine_curve`` from above.
+    _delete_existing_tie(group)
+    tie_name_hint = "{0}_tie".format(group.split("|")[-1])
+    tie_xform = _create_hair_tie(
+        spine_curve, params["tail_length"],
+        params["radius"], tie_name_hint)
+    if tie_xform:
+        try:
+            reparented = cmds.parent(tie_xform, group) or []
+            if reparented:
+                tie_xform = reparented[0]
+        except RuntimeError:
+            pass
+        uids = cmds.ls(tie_xform, uuid=True) or []
+        if uids:
+            _stamp_tie_uuid(group, uids[0])
+    else:
+        # No tail → no tie. Clear the stored UUID so we don't leave
+        # stale metadata behind.
+        _stamp_tie_uuid(group, "")
 
 
 def _next_braid_group_name() -> str:
@@ -945,6 +1113,26 @@ def create_braid_from_spine(
             _stamp_braid_params(
                 stamp_target, spine_uuid,
                 strand_mesh_uuids, params_dict)
+
+        # Hair tie — a small torus around the spine at the tie
+        # point. Only created when there IS a tail (nothing to tie
+        # otherwise). Parented under the same Braid group so it
+        # moves with the strands, and its UUID is stamped on the
+        # group so rebuild can update it later.
+        tie_name_hint = "{0}_tie".format(base_name)
+        tie_xform = _create_hair_tie(
+            spine_curve, tail_length, radius, tie_name_hint)
+        if tie_xform and stamp_target and cmds.objExists(stamp_target):
+            try:
+                reparented = cmds.parent(
+                    tie_xform, stamp_target) or []
+                if reparented:
+                    tie_xform = reparented[0]
+            except RuntimeError:
+                pass
+            tie_uuids = cmds.ls(tie_xform, uuid=True) or []
+            if tie_uuids:
+                _stamp_tie_uuid(stamp_target, tie_uuids[0])
 
         if strand_meshes:
             try:
