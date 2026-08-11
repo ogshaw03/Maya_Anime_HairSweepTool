@@ -349,36 +349,46 @@ def _tail_shape(t: float) -> float:
     1 at the spine tip). Applied to each tail strand's radius so
     the tail reads as a real hair tassel below an elastic band.
 
-    Silhouette knots (matched to a real elastic-tied braid — the
-    band squeezes the hair down, and just below it the freed
-    strands relax and puff back out to a natural width before
-    hanging down and tapering to tips):
+    Knot values reverse-engineered from a hand-authored reference
+    scene (ma/test001.ma) where the user sculpted the desired tail
+    silhouette by moving CVs directly. Extracted from that scene's
+    tail01 curve, normalised against the scene's braid_radius=0.5.
 
-    * t = 0.0  → ``pinch``       (compressed inside the elastic)
-    * t = 0.15 → ``puff``        (relaxes just below the elastic —
-                                   the hair "poofs" back out here,
-                                   which is the characteristic
-                                   silhouette right under a tie)
-    * t = 1.0  → ``tip_spread``  (hangs down, slight outward drift;
-                                   individual strand tip_scale
-                                   handles the pointy hair-tip)
+    Silhouette (4-knot piecewise linear):
 
-    Two piecewise segments. All values stay < 1.0 so the tail never
-    exceeds the braid radius (which would look like a mushroom).
+    * t = 0.00 → 0.20  (pinch — compressed inside the elastic)
+    * t = 0.10 → 0.41  (puff — freed strands relax and poof out
+                        just below the tie; peak comes EARLY, not
+                        at 0.15 as the previous version assumed)
+    * t = 0.85 → 0.05  (narrow — strands converge close to the
+                        spine near the tips as they hang under
+                        their own weight; wispy tail silhouette)
+    * t = 1.00 → 0.12  (tiny tip flare — the very ends splay
+                        outward slightly, matching how real hair
+                        tips fan when the strand is otherwise thin)
+
+    All knots < 1.0 so the tail never exceeds the braid radius
+    (no mushroom silhouette).
     """
-    pinch = 0.20
-    puff = 0.40
-    tip_spread = 0.25
-    puff_at = 0.15
-    if t <= 0.0:
-        return pinch
-    if t >= 1.0:
-        return tip_spread
-    if t <= puff_at:
-        u = t / puff_at
-        return pinch + (puff - pinch) * u
-    u = (t - puff_at) / (1.0 - puff_at)
-    return puff + (tip_spread - puff) * u
+    # Ordered (t, shape) knots. Piecewise-linear between them;
+    # clamped to first/last outside [0, 1].
+    knots = (
+        (0.00, 0.20),
+        (0.10, 0.41),
+        (0.85, 0.05),
+        (1.00, 0.12),
+    )
+    if t <= knots[0][0]:
+        return knots[0][1]
+    if t >= knots[-1][0]:
+        return knots[-1][1]
+    for i in range(len(knots) - 1):
+        t0, v0 = knots[i]
+        t1, v1 = knots[i + 1]
+        if t <= t1:
+            u = (t - t0) / (t1 - t0)
+            return v0 + (v1 - v0) * u
+    return knots[-1][1]
 
 
 def _build_strand_curve(
