@@ -317,35 +317,50 @@ def _append_endpoint_at(points, positions, normals, binormals,
 
 
 def _tail_shape(t: float) -> float:
-    """Radius multiplier along the tail (t = 0 at the tie, 1 at the
-    spine tip). Real hair braids tied with an elastic show:
+    """Radial-offset multiplier along the tail (t = 0 at the tie,
+    1 at the spine tip). Applied to each tail strand's radius so
+    the tail HANGS almost straight down instead of splaying
+    outward.
 
-    * t = 0 : strand thickness matches the last woven point (1.0 —
-      continuity with the braid region)
-    * ~0.1  : sharp pinch to ``TAIL_PINCH`` where the elastic
-      squeezes the strands together
-    * ~0.4  : bulge out to ``TAIL_BULGE`` where the freed strands
-      splay open beyond the elastic
-    * 1.0   : 0, so each strand tapers to its own point
+    Silhouette (reference: real hair braid tied with an elastic
+    band, tail hanging as a ponytail-like tassel):
 
-    Piecewise-linear for cheap analytic evaluation; the four knots
-    give the classic tassel silhouette without needing bezier
-    control.
+    * t = 0.0  → 1.0  (continuity with the braid endpoints; each
+                       strand emerges from the tie at the same
+                       radial position it had at the last woven
+                       sample)
+    * t = 0.15 → 0.35 (pinched down while passing through the
+                       elastic — strands squeezed toward the spine)
+    * t = 1.0  → 0.55 (gentle outward spread at the tips; the
+                       individual strand's own thickness taper
+                       via ``tip_scale`` handles the "point"
+                       silhouette, so radial offset only needs to
+                       widen slightly — NEVER go above 1.0 or the
+                       tail balloons outward beyond the braid, which
+                       is the classic wrong silhouette)
+
+    Compared to the earlier "pinch → bulge (1.30) → tip (0)"
+    envelope: bulge > 1.0 meant tail radius EXCEEDED the braid
+    radius mid-tail — the tail read as a mushroom instead of a
+    ponytail. And forcing radius → 0 at the tip made all N strands
+    converge to a point on the spine, losing the "each strand has
+    its own tip" reading. The new envelope stays ≤ 1.0 everywhere
+    and lets each strand end where its own thickness taper naturally
+    thins it out.
     """
-    pinch = 0.20
-    bulge = 1.30
+    tie_continuity = 1.0
+    pinch = 0.35
+    tip_spread = 0.55
+    pinch_end = 0.15
     if t <= 0.0:
-        return 1.0
+        return tie_continuity
     if t >= 1.0:
-        return 0.0
-    if t <= 0.1:
-        u = t / 0.1
-        return 1.0 + (pinch - 1.0) * u
-    if t <= 0.4:
-        u = (t - 0.1) / 0.3
-        return pinch + (bulge - pinch) * u
-    u = (t - 0.4) / 0.6
-    return bulge * (1.0 - u)
+        return tip_spread
+    if t <= pinch_end:
+        u = t / pinch_end
+        return tie_continuity + (pinch - tie_continuity) * u
+    u = (t - pinch_end) / (1.0 - pinch_end)
+    return pinch + (tip_spread - pinch) * u
 
 
 def _build_strand_curve(
