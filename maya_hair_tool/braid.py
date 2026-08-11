@@ -272,24 +272,29 @@ def _strand_offset_at(
     density_middle: float,
     density_bottom: float,
     tail_length: float = 0.0,
+    taper_ramp=None,
 ) -> tuple:
     """Return the (width, depth) offset in the (N, B) plane for
-    one BRAID (woven) strand at parameter u ∈ [0, 1]. The braid
-    region only — the tail below the tie is handled by separate
-    strands built via ``_build_tail_strand_curve``.
+    one BRAID (woven) strand at parameter u ∈ [0, 1].
 
-    When ``tail_length > 0`` an additional "tie squeeze" pinches
-    the braid inward over the last ``_BRAID_TIE_SQUEEZE_ZONE`` of
-    the spine so the woven strands narrow down to the tail's
-    starting radius. Without this the braid arrives at full width
-    at tie_off and then the tail starts at 30% width — a visible
-    step where the elastic sits. Matching the two makes the
-    elastic look like it's actually squeezing the hair through it.
+    Taper: when ``taper_ramp`` is provided (list of ``(pos, value)``
+    tuples) the strand radius is multiplied by that piecewise-linear
+    envelope. Falls back to the old single-scalar ``tip_taper``
+    (linear ``1 − tip_taper·u``) when no ramp is supplied — kept
+    for legacy Braid groups that don't yet have the ramp attr.
+
+    Tie squeeze: when ``tail_length > 0`` an additional multiplier
+    pinches the braid inward over the last
+    ``_BRAID_TIE_SQUEEZE_ZONE`` of the spine so the woven strands
+    narrow down to the tail's starting radius (the elastic).
     """
     cum = _cumulative_density(
         u, density_top, density_middle, density_bottom)
     theta = phase_base + 2.0 * math.pi * turns * cum
-    taper = max(0.0, 1.0 - tip_taper * u)
+    if taper_ramp:
+        taper = max(0.0, _sample_taper_ramp(u, taper_ramp))
+    else:
+        taper = max(0.0, 1.0 - tip_taper * u)
     # Elastic squeeze — see docstring.
     if tail_length > 1e-4:
         tie_off = 1.0 - max(0.0, min(0.99, tail_length))
@@ -330,13 +335,14 @@ def _sample_frame_interpolated(u, positions, normals, binormals):
 def _append_endpoint_at(points, positions, normals, binormals,
                          u, phase_base, turns, radius, tip_taper,
                          depth_ratio, density_top, density_middle,
-                         density_bottom, tail_length=0.0):
+                         density_bottom, tail_length=0.0,
+                         taper_ramp=None):
     p, N, B = _sample_frame_interpolated(
         u, positions, normals, binormals)
     w, d = _strand_offset_at(
         u, phase_base, turns, radius, tip_taper, depth_ratio,
         density_top, density_middle, density_bottom,
-        tail_length=tail_length)
+        tail_length=tail_length, taper_ramp=taper_ramp)
     points.append((
         p[0] + w * N[0] + d * B[0],
         p[1] + w * N[1] + d * B[1],
@@ -408,6 +414,7 @@ def _build_strand_curve(
     density_bottom: float,
     tail_length: float,
     name: str,
+    taper_ramp=None,
 ) -> str:
     """Build a cubic NURBS curve for one strand of a flat 3-strand braid.
 
@@ -442,7 +449,7 @@ def _build_strand_curve(
         w, d = _strand_offset_at(
             u, phase_base, turns, radius, tip_taper, depth_ratio,
             density_top, density_middle, density_bottom,
-            tail_length=tail_length)
+            tail_length=tail_length, taper_ramp=taper_ramp)
         N = normals[i]
         B = binormals[i]
         offset = (
@@ -459,7 +466,7 @@ def _build_strand_curve(
             points, positions, normals, binormals, tie_off,
             phase_base, turns, radius, tip_taper, depth_ratio,
             density_top, density_middle, density_bottom,
-            tail_length=tail_length)
+            tail_length=tail_length, taper_ramp=taper_ramp)
 
     # Guard against tail_length so large that the braid region
     # produces fewer than 2 points — cmds.curve needs at least
@@ -548,6 +555,57 @@ _ATTR_TAIL_STRAND_UUIDS = "braidTailMeshUuids"  # pipe-joined tail mesh UUIDs
 _ATTR_TAIL_STRAND_COUNT = "braidTailStrandCount"
 _ATTR_TAIL_THICKNESS = "braidTailThickness"
 _ATTR_TAIL_TIP_TAPER = "braidTailTipTaper"
+_ATTR_TAPER_RAMP = "braidTaperRamp"      # str, "pos:val|pos:val|..."
+
+
+def _default_braid_taper_ramp() -> List[tuple]:
+    """Default 3-point taper ramp — approximates the old
+    ``tip_taper=0.6`` linear behaviour (root full, middle 0.7,
+    tip 0.4) so first-generation braids look similar to what
+    v0.5.x users are used to."""
+    return [(0.0, 1.0), (0.5, 0.7), (1.0, 0.4)]
+
+
+def _encode_ramp(entries) -> str:
+    """Pipe-joined ``pos:val`` string for stamping on the group."""
+    return "|".join(
+        "{0:.4f}:{1:.4f}".format(float(p), float(v))
+        for p, v in entries)
+
+
+def _decode_ramp(s: str) -> List[tuple]:
+    """Parse the stamped ramp string back into a sorted list of
+    ``(position, value)`` tuples."""
+    entries: List[tuple] = []
+    for token in (s or "").split("|"):
+        if not token:
+            continue
+        try:
+            p, v = token.split(":")
+            entries.append((float(p), float(v)))
+        except (ValueError, TypeError):
+            continue
+    entries.sort(key=lambda e: e[0])
+    return entries
+
+
+def _sample_taper_ramp(u: float, ramp) -> float:
+    """Piecewise-linear evaluation of the taper ramp at ``u`` ∈
+    [0, 1]. Clamped to first/last knot outside the range."""
+    if not ramp:
+        return 1.0
+    uu = max(0.0, min(1.0, float(u)))
+    if uu <= ramp[0][0]:
+        return ramp[0][1]
+    if uu >= ramp[-1][0]:
+        return ramp[-1][1]
+    for i in range(len(ramp) - 1):
+        p0, v0 = ramp[i]
+        p1, v1 = ramp[i + 1]
+        if uu <= p1:
+            t = (uu - p0) / max(1e-9, p1 - p0)
+            return v0 + (v1 - v0) * t
+    return ramp[-1][1]
 
 
 def _ensure_bool_attr(node: str, attr: str) -> None:
@@ -706,6 +764,12 @@ def read_braid_params(group: str) -> Optional[dict]:
             "tail_tip_taper":
                 _read_float_or(_ATTR_TAIL_TIP_TAPER,
                                C.DEFAULT_BRAID_TAIL_TIP_TAPER),
+            "taper_ramp":
+                (_decode_ramp(
+                    cmds.getAttr(group + "." + _ATTR_TAPER_RAMP) or "")
+                 if cmds.attributeQuery(
+                     _ATTR_TAPER_RAMP, node=group, exists=True)
+                 else _default_braid_taper_ramp()),
         }
     except Exception:
         return None
@@ -1476,6 +1540,7 @@ def rebuild_braid(group: str, **overrides) -> None:
                 params["density_middle"],
                 params["density_bottom"],
                 tail_length=params["tail_length"],
+                taper_ramp=params.get("taper_ramp"),
             )
             N = normals[j]
             B = binormals[j]
@@ -1493,7 +1558,8 @@ def rebuild_braid(group: str, **overrides) -> None:
                 params["tip_taper"], params["depth_ratio"],
                 params["density_top"], params["density_middle"],
                 params["density_bottom"],
-                tail_length=params["tail_length"])
+                tail_length=params["tail_length"],
+                taper_ramp=params.get("taper_ramp"))
         if len(points) < 2:
             # Degenerate tail_length ≈ 1.0 leaves the braid with
             # nothing to draw; skip this strand rather than fail
@@ -1523,6 +1589,12 @@ def rebuild_braid(group: str, **overrides) -> None:
     _stamp_braid_params(
         group, params["spine_uuid"],
         params["strand_mesh_uuids"], params)
+    # Taper ramp separately (string attr, not scalar).
+    ramp = params.get("taper_ramp")
+    if ramp:
+        _ensure_str_attr(group, _ATTR_TAPER_RAMP)
+        cmds.setAttr(group + "." + _ATTR_TAPER_RAMP,
+                     _encode_ramp(ramp), type="string")
 
     # Tail strands — try in-place CV update first (preserves per-
     # strand hair tweaks like thickness / taper / colour). Falls
@@ -1628,6 +1700,7 @@ def create_braid_from_spine(
     tail_strand_count: int = C.DEFAULT_BRAID_TAIL_STRAND_COUNT,
     tail_thickness: float = C.DEFAULT_BRAID_TAIL_THICKNESS,
     tail_tip_taper: float = C.DEFAULT_BRAID_TAIL_TIP_TAPER,
+    taper_ramp=None,
     density_top: float = C.DEFAULT_BRAID_DENSITY_TOP,
     density_middle: float = C.DEFAULT_BRAID_DENSITY_MIDDLE,
     density_bottom: float = C.DEFAULT_BRAID_DENSITY_BOTTOM,
@@ -1689,6 +1762,10 @@ def create_braid_from_spine(
     if not cmds.objExists(spine_curve):
         raise RuntimeError(
             "スパインカーブが存在しません: {0}".format(spine_curve))
+
+    # Default taper ramp when caller didn't supply one.
+    if not taper_ramp:
+        taper_ramp = _default_braid_taper_ramp()
 
     # Clamp sample count so degenerate inputs don't blow up.
     num_samples = max(4, int(num_samples))
@@ -1752,6 +1829,7 @@ def create_braid_from_spine(
                 density_bottom=density_bottom,
                 tail_length=tail_length,
                 name=cname,
+                taper_ramp=taper_ramp,
             )
             if not built:
                 # Degenerate config produced fewer than 2 CVs.
@@ -1878,6 +1956,13 @@ def create_braid_from_spine(
             _stamp_braid_params(
                 stamp_target, spine_uuid,
                 strand_mesh_uuids, params_dict)
+            # Separate stamp for the taper ramp since it's stored as
+            # a string attr and _stamp_braid_params only handles the
+            # scalar float attrs.
+            _ensure_str_attr(stamp_target, _ATTR_TAPER_RAMP)
+            cmds.setAttr(
+                stamp_target + "." + _ATTR_TAPER_RAMP,
+                _encode_ramp(taper_ramp), type="string")
 
         # Tail — N separate hair strands below the tie. Each
         # becomes a first-class hair strand so the user can tweak

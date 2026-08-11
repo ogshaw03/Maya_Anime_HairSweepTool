@@ -995,11 +995,47 @@ class HairBuilderUI(object):
             C.DEFAULT_BRAID_STRAND_THICKNESS, 0.01, 3.0,
             drag_cb=self._cb_braid_thickness_drag,
             change_cb=self._cb_braid_thickness_change)
-        self.braid_tip_taper = _slider_with_reset(
-            braid_part_col, "先細り (Tip Taper 0-1)",
-            C.DEFAULT_BRAID_TIP_TAPER, 0.0, 1.0,
-            drag_cb=self._cb_braid_tip_taper_drag,
-            change_cb=self._cb_braid_tip_taper_change)
+        # Braid taper — 3 sliders (root/middle/tip) + gradient
+        # editor. The 3 sliders overwrite the ramp with a 3-point
+        # linear; the gradient editor allows arbitrary N-point
+        # curves. Slider callbacks and editor callback both call
+        # _braid_apply_taper_ramp which rebuilds and stamps.
+        self.braid_taper_root = _slider_with_reset(
+            braid_part_col, "根本テーパー (Root)",
+            1.0, 0.0, 1.0,
+            drag_cb=self._cb_braid_taper_root_drag,
+            change_cb=self._cb_braid_taper_root_change)
+        self.braid_taper_middle = _slider_with_reset(
+            braid_part_col, "中間テーパー (Middle)",
+            0.7, 0.0, 1.0,
+            drag_cb=self._cb_braid_taper_middle_drag,
+            change_cb=self._cb_braid_taper_middle_change)
+        self.braid_taper_tip = _slider_with_reset(
+            braid_part_col, "先端テーパー (Tip)",
+            0.4, 0.0, 1.0,
+            drag_cb=self._cb_braid_taper_tip_drag,
+            change_cb=self._cb_braid_taper_tip_change)
+        cmds.text(
+            label=("三つ編みのテーパー curve — 左右ドラッグでポイント "
+                   "移動、右クリックでポイント追加/削除。"),
+            align="left", parent=braid_part_col,
+            font="smallObliqueLabelFont", wordWrap=True,
+        )
+        try:
+            self.braid_taper_editor = cmds.gradientControlNoAttr(
+                height=80,
+                changeCommand=self._on_braid_taper_editor_change,
+                parent=braid_part_col,
+            )
+        except Exception as exc:
+            cmds.warning(
+                "[maya_hair_tool] braid テーパーエディタ生成失敗: "
+                "{0}".format(exc))
+            self.braid_taper_editor = None
+        # Keep the old tip_taper attribute pointing at None so any
+        # residual reference is a safe no-op — the single slider was
+        # replaced by the 3-slider + editor combo above.
+        self.braid_tip_taper = None
         self.braid_density_top = _slider_with_reset(
             braid_part_col, "上部密度 (Top Density)",
             C.DEFAULT_BRAID_DENSITY_TOP, 0.1, 3.0,
@@ -1541,12 +1577,16 @@ class HairBuilderUI(object):
         Catches broadly (not just RuntimeError) so slider-read /
         arithmetic issues surface as UI warnings instead of a bare
         Script Editor traceback."""
+        # tip_taper is legacy — the ramp version below drives shape
+        # instead. Passing the old default keeps the kwarg valid.
+        taper_ramp = self._braid_current_taper_ramp_from_sliders()
         try:
             braid.create_braid_from_spine(
                 turns_per_length=_read_float(self.braid_turns),
                 radius=_read_float(self.braid_radius),
                 strand_thickness=_read_float(self.braid_thickness),
-                tip_taper=_read_float(self.braid_tip_taper),
+                tip_taper=C.DEFAULT_BRAID_TIP_TAPER,
+                taper_ramp=taper_ramp,
                 tail_length=_read_float(self.braid_tail_length),
                 tail_strand_count=_read_int(
                     self.braid_tail_strand_count),
@@ -1616,7 +1656,8 @@ class HairBuilderUI(object):
         self._braid_live_apply("strand_thickness", value, False)
 
     def _cb_braid_tip_taper_drag(self, value):
-        self._braid_live_apply("tip_taper", value, False)
+        # Legacy — see _cb_braid_tip_taper_change.
+        pass
 
     # changeCommand — final value on drag end / field entry;
     # wrapped in one undo chunk so Ctrl+Z rolls the drag back as
@@ -1631,7 +1672,114 @@ class HairBuilderUI(object):
         self._braid_live_apply("strand_thickness", value, True)
 
     def _cb_braid_tip_taper_change(self, value):
-        self._braid_live_apply("tip_taper", value, True)
+        # Legacy — the single tip_taper slider was replaced by
+        # root/middle/tip sliders + a gradient editor (see the
+        # _cb_braid_taper_*_change handlers below). Kept as a
+        # safe no-op so any stale reference doesn't crash.
+        pass
+
+    # Braid taper — 3 sliders write a 3-point ramp; gradient
+    # editor writes an N-point ramp. Both funnel through
+    # _apply_braid_taper_ramp which does the rebuild.
+    def _braid_current_taper_ramp_from_sliders(self):
+        try:
+            r = float(_read_float(self.braid_taper_root))
+            m = float(_read_float(self.braid_taper_middle))
+            t = float(_read_float(self.braid_taper_tip))
+        except Exception:
+            return None
+        return [(0.0, r), (0.5, m), (1.0, t)]
+
+    def _apply_braid_taper_ramp(self, ramp, record_undo):
+        if self._syncing_sliders:
+            return
+        group = self._selected_braid_group()
+        if not group:
+            return
+        if record_undo:
+            cmds.undoInfo(openChunk=True, chunkName="braidTaperEdit")
+        try:
+            braid.rebuild_braid(group, taper_ramp=ramp)
+        except Exception as exc:
+            cmds.warning(
+                "[maya_hair_tool] Braid taper rebuild 失敗: "
+                "{0}".format(exc))
+        finally:
+            if record_undo:
+                cmds.undoInfo(closeChunk=True)
+        self._sync_braid_taper_editor_from_ramp(ramp)
+
+    def _cb_braid_taper_root_drag(self, *_):
+        ramp = self._braid_current_taper_ramp_from_sliders()
+        if ramp:
+            self._apply_braid_taper_ramp(ramp, False)
+
+    def _cb_braid_taper_root_change(self, *_):
+        ramp = self._braid_current_taper_ramp_from_sliders()
+        if ramp:
+            self._apply_braid_taper_ramp(ramp, True)
+
+    def _cb_braid_taper_middle_drag(self, *_):
+        ramp = self._braid_current_taper_ramp_from_sliders()
+        if ramp:
+            self._apply_braid_taper_ramp(ramp, False)
+
+    def _cb_braid_taper_middle_change(self, *_):
+        ramp = self._braid_current_taper_ramp_from_sliders()
+        if ramp:
+            self._apply_braid_taper_ramp(ramp, True)
+
+    def _cb_braid_taper_tip_drag(self, *_):
+        ramp = self._braid_current_taper_ramp_from_sliders()
+        if ramp:
+            self._apply_braid_taper_ramp(ramp, False)
+
+    def _cb_braid_taper_tip_change(self, *_):
+        ramp = self._braid_current_taper_ramp_from_sliders()
+        if ramp:
+            self._apply_braid_taper_ramp(ramp, True)
+
+    def _on_braid_taper_editor_change(self, *_):
+        if self._syncing_sliders or not getattr(
+                self, "braid_taper_editor", None):
+            return
+        try:
+            s = cmds.gradientControlNoAttr(
+                self.braid_taper_editor, query=True,
+                asString=True) or ""
+        except Exception:
+            return
+        parts = [p for p in s.split(",") if p.strip()]
+        ramp = []
+        for i in range(0, len(parts) - 2, 3):
+            try:
+                p = max(0.0, min(1.0, float(parts[i])))
+                v = max(0.0, min(1.0, float(parts[i + 1])))
+                ramp.append((p, v))
+            except Exception:
+                continue
+        ramp.sort(key=lambda e: e[0])
+        if len(ramp) < 2:
+            return
+        self._apply_braid_taper_ramp(ramp, True)
+
+    def _sync_braid_taper_editor_from_ramp(self, ramp):
+        editor = getattr(self, "braid_taper_editor", None)
+        if not editor or not ramp:
+            return
+        try:
+            parts = []
+            for p, v in ramp:
+                parts.append("{0},{1},2".format(float(p), float(v)))
+            gradient_str = ",".join(parts)
+            self._syncing_sliders = True
+            try:
+                cmds.gradientControlNoAttr(
+                    editor, edit=True, asString=gradient_str)
+            finally:
+                self._syncing_sliders = False
+        except Exception:
+            pass
 
     def _cb_braid_tail_drag(self, value):
         self._braid_live_apply("tail_length", value, False)
@@ -1754,9 +1902,25 @@ class HairBuilderUI(object):
             cmds.floatSliderGrp(
                 self.braid_thickness, edit=True,
                 value=params["strand_thickness"])
+            # Braid taper — sync 3 sliders + gradient editor from
+            # the stored ramp. If ramp is missing/1-point, derive
+            # from the legacy tip_taper scalar as a fallback.
+            ramp = params.get("taper_ramp") or []
+            if len(ramp) < 2:
+                tt = float(params.get("tip_taper", 0.6))
+                ramp = [(0.0, 1.0), (0.5, max(0.0, 1.0 - tt * 0.5)),
+                        (1.0, max(0.0, 1.0 - tt))]
+            # Slider values = ramp sampled at 0 / 0.5 / 1.
             cmds.floatSliderGrp(
-                self.braid_tip_taper, edit=True,
-                value=params["tip_taper"])
+                self.braid_taper_root, edit=True,
+                value=braid._sample_taper_ramp(0.0, ramp))
+            cmds.floatSliderGrp(
+                self.braid_taper_middle, edit=True,
+                value=braid._sample_taper_ramp(0.5, ramp))
+            cmds.floatSliderGrp(
+                self.braid_taper_tip, edit=True,
+                value=braid._sample_taper_ramp(1.0, ramp))
+            self._sync_braid_taper_editor_from_ramp(ramp)
             cmds.floatSliderGrp(
                 self.braid_tail_length, edit=True,
                 value=params["tail_length"])
