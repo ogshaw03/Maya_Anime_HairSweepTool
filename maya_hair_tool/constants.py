@@ -124,6 +124,15 @@ DEFAULT_BRAID_DENSITY_TOP = 1.0
 DEFAULT_BRAID_DENSITY_MIDDLE = 1.0
 DEFAULT_BRAID_DENSITY_BOTTOM = 1.0
 DEFAULT_BRAID_SAMPLES = 32             # helix smoothness; 32 covers most spines
+# Tail strands: after the tie the braid opens into N free hair
+# strands (each its own curve + mesh + sweepMeshCreator) so users
+# can individually adjust thickness / taper / colour via the
+# normal hair sliders. Rebuild preserves per-strand tweaks when
+# the count matches (in-place CV update); changing the count
+# forces a full recreate.
+DEFAULT_BRAID_TAIL_STRAND_COUNT = 6
+DEFAULT_BRAID_TAIL_SAMPLES = 12       # samples along each tail strand curve
+DEFAULT_BRAID_TAIL_THICKNESS = 0.3    # initial strand thickness
 # Nyquist / aliasing floor: fewer than this many samples PER FULL TURN and
 # the generated helix folds into a zig-zag instead of a smooth spiral.
 # 8 samples/turn keeps the curve visually smooth at any reasonable

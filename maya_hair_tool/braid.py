@@ -264,41 +264,56 @@ def _strand_offset_at(
     density_top: float,
     density_middle: float,
     density_bottom: float,
-    tail_length: float,
 ) -> tuple:
-    """Return the (width, depth) offset in the (N, B) plane for a
-    single strand at parameter u. Handles the braid → tail split:
+    """Return the (width, depth) offset in the (N, B) plane for
+    one BRAID (woven) strand at parameter u ∈ [0, 1]. The braid
+    region only — the tail below the tie is handled by separate
+    strands built via ``_build_tail_strand_curve``."""
+    cum = _cumulative_density(
+        u, density_top, density_middle, density_bottom)
+    theta = phase_base + 2.0 * math.pi * turns * cum
+    taper = max(0.0, 1.0 - tip_taper * u)
+    w = radius * math.sin(theta) * taper
+    d = radius * depth_ratio * math.sin(2.0 * theta) * taper
+    return w, d
 
-    * ``u < tie_off``: sinusoidal weave (planar 3-strand braid) with
-      the density curve controlling local turn rate.
-    * ``u >= tie_off``: tail — freeze the (w, d) values from the
-      braid formula at ``tie_off`` and linearly taper them to (0, 0)
-      at the spine tip so the strand comes to a point beyond the
-      tie. Because each strand's tie value is at a different point
-      of its sine wave, the three strands emerge from the tie at
-      three visibly-separate spots and taper to three visibly-
-      separate tips — the tassel look at the bottom of a braid.
-    """
-    tie_off = 1.0 - max(0.0, min(0.99, tail_length))
 
-    def _braid_wd(u_val):
-        cum = _cumulative_density(
-            u_val, density_top, density_middle, density_bottom)
-        theta = phase_base + 2.0 * math.pi * turns * cum
-        taper = max(0.0, 1.0 - tip_taper * u_val)
-        w = radius * math.sin(theta) * taper
-        d = radius * depth_ratio * math.sin(2.0 * theta) * taper
-        return w, d
+def _sample_frame_interpolated(u, positions, normals, binormals):
+    """Linearly interpolate position and frame vectors at fractional
+    sample index derived from u ∈ [0,1]. Used to snap a curve's
+    endpoint exactly onto the tie boundary rather than the nearest
+    coarse sample."""
+    n = len(positions)
+    if n < 2:
+        return positions[0], normals[0], binormals[0]
+    idx_f = u * (n - 1)
+    lo = int(math.floor(idx_f))
+    hi = min(n - 1, lo + 1)
+    t = idx_f - lo
+    def _lerp(a, b, tt):
+        return (a[0] * (1 - tt) + b[0] * tt,
+                a[1] * (1 - tt) + b[1] * tt,
+                a[2] * (1 - tt) + b[2] * tt)
+    p = _lerp(positions[lo], positions[hi], t)
+    N = _normalize(_lerp(normals[lo], normals[hi], t))
+    B = _normalize(_lerp(binormals[lo], binormals[hi], t))
+    return p, N, B
 
-    if tie_off >= 1.0 or u < tie_off:
-        return _braid_wd(u)
-    # Tail region — see ``_tail_shape`` for the pinch → bulge → tip
-    # multiplier explanation.
-    w_tie, d_tie = _braid_wd(tie_off)
-    tail_span = 1.0 - tie_off
-    tail_progress = (u - tie_off) / max(1e-9, tail_span)
-    shape = _tail_shape(tail_progress)
-    return w_tie * shape, d_tie * shape
+
+def _append_endpoint_at(points, positions, normals, binormals,
+                         u, phase_base, turns, radius, tip_taper,
+                         depth_ratio, density_top, density_middle,
+                         density_bottom):
+    p, N, B = _sample_frame_interpolated(
+        u, positions, normals, binormals)
+    w, d = _strand_offset_at(
+        u, phase_base, turns, radius, tip_taper, depth_ratio,
+        density_top, density_middle, density_bottom)
+    points.append((
+        p[0] + w * N[0] + d * B[0],
+        p[1] + w * N[1] + d * B[1],
+        p[2] + w * N[2] + d * B[2],
+    ))
 
 
 def _tail_shape(t: float) -> float:
@@ -372,12 +387,15 @@ def _build_strand_curve(
     together so the braid tapers to a point at the tip.
     """
     n = len(positions)
+    tie_off = 1.0 - max(0.0, min(0.99, tail_length))
     points: List[Vec3] = []
     for i in range(n):
         u = float(i) / float(n - 1)
+        if u > tie_off:
+            break  # braid strand ends at the tie; tail is separate
         w, d = _strand_offset_at(
             u, phase_base, turns, radius, tip_taper, depth_ratio,
-            density_top, density_middle, density_bottom, tail_length)
+            density_top, density_middle, density_bottom)
         N = normals[i]
         B = binormals[i]
         offset = (
@@ -386,6 +404,14 @@ def _build_strand_curve(
             w * N[2] + d * B[2],
         )
         points.append(_add(positions[i], offset))
+    # If tie_off falls between samples, extend one more point at
+    # exactly tie_off so the strand terminates cleanly at the tie
+    # (avoids a visible gap between braid and tail strands).
+    if points and tie_off > 0.0 and tie_off < 1.0:
+        _append_endpoint_at(
+            points, positions, normals, binormals, tie_off,
+            phase_base, turns, radius, tip_taper, depth_ratio,
+            density_top, density_middle, density_bottom)
 
     # Cubic BSpline through the samples. If we ever hit < 4 points
     # ``degree=3`` is illegal; fall back to linear.
@@ -461,6 +487,9 @@ _ATTR_DENSITY_TOP = "braidDensityTop"
 _ATTR_DENSITY_MIDDLE = "braidDensityMiddle"
 _ATTR_DENSITY_BOTTOM = "braidDensityBottom"
 _ATTR_TIE_UUID = "braidHairTieUuid"      # UUID of the elastic torus mesh
+_ATTR_TAIL_STRAND_UUIDS = "braidTailMeshUuids"  # pipe-joined tail mesh UUIDs
+_ATTR_TAIL_STRAND_COUNT = "braidTailStrandCount"
+_ATTR_TAIL_THICKNESS = "braidTailThickness"
 
 
 def _ensure_bool_attr(node: str, attr: str) -> None:
@@ -476,6 +505,25 @@ def _ensure_str_attr(node: str, attr: str) -> None:
 def _ensure_float_attr(node: str, attr: str) -> None:
     if not cmds.attributeQuery(attr, node=node, exists=True):
         cmds.addAttr(node, longName=attr, attributeType="float")
+
+
+def _stamp_tail_meta(group: str, tail_mesh_uuids: List[str],
+                      tail_strand_count: int,
+                      tail_thickness: float) -> None:
+    """Stamp the tail-strand metadata so rebuild can decide whether
+    to update tail CVs in place (count matches) or fully recreate
+    (count changed)."""
+    _ensure_str_attr(group, _ATTR_TAIL_STRAND_UUIDS)
+    cmds.setAttr(
+        group + "." + _ATTR_TAIL_STRAND_UUIDS,
+        "|".join(tail_mesh_uuids), type="string")
+    _ensure_float_attr(group, _ATTR_TAIL_STRAND_COUNT)
+    cmds.setAttr(
+        group + "." + _ATTR_TAIL_STRAND_COUNT,
+        float(tail_strand_count))
+    _ensure_float_attr(group, _ATTR_TAIL_THICKNESS)
+    cmds.setAttr(group + "." + _ATTR_TAIL_THICKNESS,
+                 float(tail_thickness))
 
 
 def _stamp_tie_uuid(group: str, tie_uuid: str) -> None:
@@ -578,6 +626,21 @@ def read_braid_params(group: str) -> Optional[dict]:
                  if cmds.attributeQuery(_ATTR_TIE_UUID, node=group,
                                         exists=True)
                  else ""),
+            "tail_mesh_uuids":
+                ([u for u in
+                  (cmds.getAttr(group + "."
+                                + _ATTR_TAIL_STRAND_UUIDS) or ""
+                   ).split("|") if u]
+                 if cmds.attributeQuery(
+                     _ATTR_TAIL_STRAND_UUIDS, node=group,
+                     exists=True)
+                 else []),
+            "tail_strand_count":
+                int(_read_float_or(_ATTR_TAIL_STRAND_COUNT,
+                                    C.DEFAULT_BRAID_TAIL_STRAND_COUNT)),
+            "tail_thickness":
+                _read_float_or(_ATTR_TAIL_THICKNESS,
+                               C.DEFAULT_BRAID_TAIL_THICKNESS),
         }
     except Exception:
         return None
@@ -778,6 +841,199 @@ def install_watchers_for_existing_braids() -> None:
         if not spine_matches:
             continue
         _install_spine_watcher(g, spine_matches[0])
+
+
+def _tail_strand_points(
+    spine_curve: str,
+    phase: float,
+    tail_length: float,
+    braid_radius: float,
+    num_samples: int,
+) -> List[Vec3]:
+    """Compute world-space points for one tail strand curve. The
+    strand starts at the tie point on the spine, spirals slightly
+    (angular ``phase``), and follows the pinch → bulge → tip shape
+    down to the spine tip. Independent of the woven-braid formula
+    — tail strands don't cross each other, they just splay out."""
+    tie_off = 1.0 - max(0.0, min(0.99, tail_length))
+    if tie_off >= 1.0:
+        return []
+    # Sample spine specifically across the tail region for tighter
+    # control (we don't need to reuse the braid's sample array).
+    mn, mx = _spine_param_range(spine_curve)
+    span = mx - mn
+    points: List[Vec3] = []
+    for j in range(num_samples):
+        t = float(j) / float(num_samples - 1)  # 0..1 across tail
+        u = tie_off + t * (1.0 - tie_off)
+        param = mn + span * u
+        p = cmds.pointOnCurve(spine_curve, parameter=param,
+                              position=True)
+        # Local frame at u — use small finite difference for tangent.
+        d = max(1e-6, span * 1e-3)
+        p0 = cmds.pointOnCurve(
+            spine_curve, parameter=max(mn, param - d),
+            position=True)
+        p1 = cmds.pointOnCurve(
+            spine_curve, parameter=min(mx, param + d),
+            position=True)
+        T = _normalize(
+            (p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2]))
+        if _length(T) < 1e-6:
+            T = (0.0, 1.0, 0.0)
+        ref = (0.0, 1.0, 0.0) if abs(T[1]) < 0.9 else (1.0, 0.0, 0.0)
+        N = _normalize(_cross(ref, T))
+        if _length(N) < 1e-6:
+            N = _normalize(_cross((1.0, 0.0, 0.0), T))
+        B = _normalize(_cross(T, N))
+        # Pinch → bulge → tip radius envelope.
+        r_shape = _tail_shape(t)
+        r = braid_radius * r_shape
+        offset_w = r * math.cos(phase)
+        offset_d = r * math.sin(phase)
+        points.append((
+            float(p[0]) + offset_w * N[0] + offset_d * B[0],
+            float(p[1]) + offset_w * N[1] + offset_d * B[1],
+            float(p[2]) + offset_w * N[2] + offset_d * B[2],
+        ))
+    return points
+
+
+def _create_tail_strands(
+    spine_curve: str,
+    tail_length: float,
+    braid_radius: float,
+    tail_strand_count: int,
+    tail_thickness: float,
+    parent_group: Optional[str],
+    base_name: str,
+) -> List[str]:
+    """Generate N tail strand curves and feed them through the hair
+    pipeline so each becomes an independent hair strand (with its
+    own sweepMeshCreator, its own thickness / taper etc.). Returns
+    the list of resulting strand mesh transforms.
+
+    ``parent_group`` is the geom-side Braid group — the created
+    meshes get reparented under it so they show up as children of
+    the Braid_NN group in the outliner and move with it.
+    """
+    if tail_length <= 1e-4 or tail_strand_count < 1:
+        return []
+    tail_count = max(1, int(tail_strand_count))
+    tail_samples = max(4, int(C.DEFAULT_BRAID_TAIL_SAMPLES))
+    strand_curves: List[str] = []
+    for i in range(tail_count):
+        phase = 2.0 * math.pi * (float(i) / float(tail_count))
+        pts = _tail_strand_points(
+            spine_curve, phase, tail_length, braid_radius,
+            tail_samples)
+        if len(pts) < 2:
+            continue
+        cname = "{0}_tail{1:02d}_curve".format(base_name, i + 1)
+        degree = 3 if len(pts) >= 4 else 1
+        strand_curves.append(
+            cmds.curve(name=cname, p=pts, degree=degree))
+
+    if not strand_curves:
+        return []
+
+    # Push through the standard hair pipeline so each tail strand
+    # becomes a first-class hair strand (thickness / taper / colour
+    # / group operations all "just work" on them).
+    try:
+        cmds.select(strand_curves, replace=True)
+        hair.create_hair_from_selected_curves(
+            thickness=tail_thickness)
+    except Exception as exc:
+        cmds.warning(
+            "[maya_hair_tool] tail strand の hair 化に失敗: "
+            "{0}".format(exc))
+        for c in strand_curves:
+            if cmds.objExists(c):
+                try:
+                    cmds.delete(c)
+                except Exception:
+                    pass
+        return []
+
+    tail_meshes = [
+        m for m in (cmds.ls(selection=True, long=True) or [])
+        if hair._is_hair_strand_transform(m)
+    ]
+
+    # Reparent tail meshes under the Braid geom group so the tail
+    # moves with the braid and appears together in the outliner.
+    if parent_group and cmds.objExists(parent_group):
+        moved: List[str] = []
+        for m in tail_meshes:
+            try:
+                r = cmds.parent(m, parent_group) or []
+                moved.append(r[0] if r else m)
+            except RuntimeError:
+                moved.append(m)
+        tail_meshes = moved
+
+    return tail_meshes
+
+
+def _delete_existing_tail_strands(group: str) -> None:
+    """Delete the tail meshes (and their guide curves) referenced
+    from the group's stored UUID list. Called before every tail
+    (re)creation so we never accumulate orphans."""
+    if not cmds.attributeQuery(_ATTR_TAIL_STRAND_UUIDS, node=group,
+                                exists=True):
+        return
+    raw = cmds.getAttr(group + "." + _ATTR_TAIL_STRAND_UUIDS) or ""
+    for uid in raw.split("|"):
+        if not uid:
+            continue
+        matches = cmds.ls(uid) or []
+        for m in matches:
+            if not cmds.objExists(m):
+                continue
+            # Also delete the guide curve.
+            creators = su.sweep_creators_from_nodes([m]) or []
+            for c in creators:
+                curve = su.curve_from_creator(c)
+                if curve and cmds.objExists(curve):
+                    try:
+                        cmds.delete(curve)
+                    except Exception:
+                        pass
+            try:
+                cmds.delete(m)
+            except Exception:
+                pass
+
+
+def _update_tail_strands_in_place(
+    group: str,
+    spine_curve: str,
+    tail_length: float,
+    braid_radius: float,
+    tail_mesh_uuids: List[str],
+) -> bool:
+    """When the tail strand COUNT hasn't changed, update each tail
+    strand's guide curve CVs in-place so per-strand hair tweaks
+    (thickness, taper, colour) survive the rebuild. Returns True
+    on success, False when any UUID couldn't be resolved (caller
+    should then fall back to full delete + recreate)."""
+    tail_samples = max(4, int(C.DEFAULT_BRAID_TAIL_SAMPLES))
+    count = len(tail_mesh_uuids)
+    if count < 1:
+        return False
+    curves = _find_strand_curves_for_rebuild(tail_mesh_uuids)
+    if any(not c or not cmds.objExists(c) for c in curves):
+        return False
+    for i, curve in enumerate(curves):
+        phase = 2.0 * math.pi * (float(i) / float(count))
+        pts = _tail_strand_points(
+            spine_curve, phase, tail_length, braid_radius,
+            tail_samples)
+        if len(pts) < 2:
+            return False
+        _replace_curve_cvs(curve, pts)
+    return True
 
 
 def _resolve_spine_transform(spine_curve: str) -> Optional[str]:
@@ -1044,6 +1300,41 @@ def rebuild_braid(group: str, **overrides) -> None:
         group, params["spine_uuid"],
         params["strand_mesh_uuids"], params)
 
+    # Tail strands — try in-place CV update first (preserves per-
+    # strand hair tweaks like thickness / taper / colour). Falls
+    # back to full delete + recreate when the count changed OR
+    # when any stored tail UUID no longer resolves.
+    base_name_hint = group.split("|")[-1]
+    existing_tail_uuids = params.get("tail_mesh_uuids") or []
+    desired_count = int(params.get(
+        "tail_strand_count",
+        C.DEFAULT_BRAID_TAIL_STRAND_COUNT))
+    tail_thickness = float(params.get(
+        "tail_thickness", C.DEFAULT_BRAID_TAIL_THICKNESS))
+    tail_updated_in_place = False
+    if (existing_tail_uuids
+            and len(existing_tail_uuids) == desired_count
+            and params["tail_length"] > 1e-4):
+        tail_updated_in_place = _update_tail_strands_in_place(
+            group, spine_curve, params["tail_length"],
+            params["radius"], existing_tail_uuids)
+    if not tail_updated_in_place:
+        _delete_existing_tail_strands(group)
+        new_tail_meshes = _create_tail_strands(
+            spine_curve, params["tail_length"],
+            params["radius"], desired_count, tail_thickness,
+            group, base_name_hint)
+        new_tail_uuids: List[str] = []
+        for m in new_tail_meshes:
+            try:
+                u = cmds.ls(m, uuid=True) or []
+                if u:
+                    new_tail_uuids.append(u[0])
+            except Exception:
+                pass
+        _stamp_tail_meta(group, new_tail_uuids, desired_count,
+                          tail_thickness)
+
     # Hair tie — replace in-place so radius / position stay in sync
     # with the current params. Delete any existing tie, then build a
     # fresh one if the current tail_length calls for it. Reuse the
@@ -1100,6 +1391,8 @@ def create_braid_from_spine(
     tip_taper: float = C.DEFAULT_BRAID_TIP_TAPER,
     depth_ratio: float = C.DEFAULT_BRAID_DEPTH_RATIO,
     tail_length: float = C.DEFAULT_BRAID_TAIL_LENGTH,
+    tail_strand_count: int = C.DEFAULT_BRAID_TAIL_STRAND_COUNT,
+    tail_thickness: float = C.DEFAULT_BRAID_TAIL_THICKNESS,
     density_top: float = C.DEFAULT_BRAID_DENSITY_TOP,
     density_middle: float = C.DEFAULT_BRAID_DENSITY_MIDDLE,
     density_bottom: float = C.DEFAULT_BRAID_DENSITY_BOTTOM,
@@ -1312,6 +1605,8 @@ def create_braid_from_spine(
             "density_top": density_top,
             "density_middle": density_middle,
             "density_bottom": density_bottom,
+            "tail_strand_count": tail_strand_count,
+            "tail_thickness": tail_thickness,
         }
         stamp_target = None
         if group and strand_meshes:
@@ -1323,6 +1618,28 @@ def create_braid_from_spine(
             _stamp_braid_params(
                 stamp_target, spine_uuid,
                 strand_mesh_uuids, params_dict)
+
+        # Tail — N separate hair strands below the tie. Each
+        # becomes a first-class hair strand so the user can tweak
+        # thickness / taper / colour individually via the normal
+        # hair sliders. Parented under the Braid geom group so
+        # they group visually with the woven strands.
+        tail_meshes = _create_tail_strands(
+            spine_curve, tail_length, radius,
+            tail_strand_count, tail_thickness,
+            stamp_target, base_name)
+        tail_uuids: List[str] = []
+        for m in tail_meshes:
+            try:
+                u = cmds.ls(m, uuid=True) or []
+                if u:
+                    tail_uuids.append(u[0])
+            except Exception:
+                pass
+        if stamp_target and cmds.objExists(stamp_target):
+            _stamp_tail_meta(
+                stamp_target, tail_uuids, tail_strand_count,
+                tail_thickness)
 
         # Hair tie — a small torus around the spine at the tie
         # point. Only created when there IS a tail (nothing to tie

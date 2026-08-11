@@ -990,6 +990,16 @@ class HairBuilderUI(object):
             C.DEFAULT_BRAID_TAIL_LENGTH, 0.0, 0.5,
             drag_cb=self._cb_braid_tail_drag,
             change_cb=self._cb_braid_tail_change)
+        self.braid_tail_strand_count = _int_slider_with_reset(
+            braid_col, "尾のストランド本数",
+            C.DEFAULT_BRAID_TAIL_STRAND_COUNT, 2, 12,
+            drag_cb=self._cb_braid_tail_count_drag,
+            change_cb=self._cb_braid_tail_count_change)
+        self.braid_tail_thickness = _slider_with_reset(
+            braid_col, "尾ストランドの初期太さ",
+            C.DEFAULT_BRAID_TAIL_THICKNESS, 0.01, 3.0,
+            drag_cb=self._cb_braid_tail_thick_drag,
+            change_cb=self._cb_braid_tail_thick_change)
         self.braid_density_top = _slider_with_reset(
             braid_col, "上部密度 (Top Density)",
             C.DEFAULT_BRAID_DENSITY_TOP, 0.1, 3.0,
@@ -1494,6 +1504,10 @@ class HairBuilderUI(object):
                 strand_thickness=_read_float(self.braid_thickness),
                 tip_taper=_read_float(self.braid_tip_taper),
                 tail_length=_read_float(self.braid_tail_length),
+                tail_strand_count=_read_int(
+                    self.braid_tail_strand_count),
+                tail_thickness=_read_float(
+                    self.braid_tail_thickness),
                 density_top=_read_float(self.braid_density_top),
                 density_middle=_read_float(self.braid_density_middle),
                 density_bottom=_read_float(self.braid_density_bottom),
@@ -1579,6 +1593,23 @@ class HairBuilderUI(object):
     def _cb_braid_tail_change(self, value):
         self._braid_live_apply("tail_length", value, True)
 
+    def _cb_braid_tail_count_drag(self, value):
+        # Changing count forces a full recreate of tail strands
+        # (any per-strand tweaks the user made are lost). Use the
+        # change_cb path for that — dragging live would thrash the
+        # tail on every intermediate value.
+        pass
+
+    def _cb_braid_tail_count_change(self, value):
+        self._braid_live_apply(
+            "tail_strand_count", int(value), True)
+
+    def _cb_braid_tail_thick_drag(self, value):
+        self._braid_live_apply("tail_thickness", value, False)
+
+    def _cb_braid_tail_thick_change(self, value):
+        self._braid_live_apply("tail_thickness", value, True)
+
     def _cb_braid_density_top_drag(self, value):
         self._braid_live_apply("density_top", value, False)
 
@@ -1627,6 +1658,16 @@ class HairBuilderUI(object):
             cmds.floatSliderGrp(
                 self.braid_tail_length, edit=True,
                 value=params["tail_length"])
+            cmds.intSliderGrp(
+                self.braid_tail_strand_count, edit=True,
+                value=int(params.get(
+                    "tail_strand_count",
+                    C.DEFAULT_BRAID_TAIL_STRAND_COUNT)))
+            cmds.floatSliderGrp(
+                self.braid_tail_thickness, edit=True,
+                value=params.get(
+                    "tail_thickness",
+                    C.DEFAULT_BRAID_TAIL_THICKNESS))
             cmds.floatSliderGrp(
                 self.braid_density_top, edit=True,
                 value=params["density_top"])
