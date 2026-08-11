@@ -337,6 +337,18 @@ class HairBuilderUI(object):
                 self._script_jobs.append(jid)
             except Exception:
                 pass
+        # After a new scene opens, walk any pre-existing Braid groups
+        # and (re-)register their spine watchers — scriptJobs made in
+        # a prior scene are dead by then.
+        for evt in ("SceneOpened", "NewSceneOpened"):
+            try:
+                jid = cmds.scriptJob(
+                    parent=WINDOW_NAME,
+                    event=[evt,
+                            braid.install_watchers_for_existing_braids])
+                self._script_jobs.append(jid)
+            except Exception:
+                pass
         # SelectionChanged drives the adjustment-mode dispatch
         # (creation / absolute / relative) AND the taper editor
         # sync — both need to react to a new strand being picked.
@@ -353,6 +365,12 @@ class HairBuilderUI(object):
         # header shows the right mode from the start.
         self._refresh_hair_list()
         self._on_selection_changed()
+        # Register spine-follow watchers for any Braid groups already
+        # in the scene (survives across scene reload / tool reopen).
+        try:
+            braid.install_watchers_for_existing_braids()
+        except Exception:
+            pass
 
     # -----------------------------------------------------------------
     # Hair list panel — enumerate strands tagged animeHairTool so the

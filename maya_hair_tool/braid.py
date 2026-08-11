@@ -660,6 +660,126 @@ def _create_hair_tie(
     return torus_xform
 
 
+# --------------------------------------------------------------------------- #
+# Spine live-watching (scriptJob) — makes the braid follow both
+# transform moves AND CV edits on the spine.
+# --------------------------------------------------------------------------- #
+
+# module-level state — watcher IDs keyed by Braid group UUID, plus
+# a "dirty" set used to coalesce bursts of spine edits into a
+# single deferred rebuild per idle.
+_spine_watcher_jobs: dict = {}
+_pending_rebuilds: set = set()
+
+
+def _spine_shape_of(spine_curve: str) -> Optional[str]:
+    """Return the nurbsCurve shape node for ``spine_curve`` (which
+    may be a transform or a shape). scriptJob attributeChange needs
+    a shape's ``worldSpace[0]`` — the transform doesn't have one."""
+    if not spine_curve or not cmds.objExists(spine_curve):
+        return None
+    if cmds.nodeType(spine_curve) == "nurbsCurve":
+        return spine_curve
+    shapes = cmds.listRelatives(
+        spine_curve, shapes=True, fullPath=True,
+        type="nurbsCurve") or []
+    return shapes[0] if shapes else None
+
+
+def _schedule_rebuild(group_uuid: str) -> None:
+    """Enqueue a deferred rebuild for ``group_uuid``. Multiple
+    triggers within the same idle cycle coalesce to ONE rebuild.
+    ``lowestPriority=True`` lets Maya finish its current DG
+    evaluation before we start rewriting curve CVs."""
+    if group_uuid in _pending_rebuilds:
+        return
+    _pending_rebuilds.add(group_uuid)
+    try:
+        cmds.evalDeferred(
+            lambda uid=group_uuid: _do_deferred_rebuild(uid),
+            lowestPriority=True)
+    except Exception:
+        # Fallback — do it immediately if evalDeferred is unavailable
+        # (e.g. batch mode).
+        _do_deferred_rebuild(group_uuid)
+
+
+def _do_deferred_rebuild(group_uuid: str) -> None:
+    _pending_rebuilds.discard(group_uuid)
+    matches = cmds.ls(group_uuid) or []
+    if not matches:
+        return
+    group = matches[0]
+    if not is_braid_group(group):
+        return
+    try:
+        rebuild_braid(group)
+    except Exception as exc:
+        cmds.warning(
+            "[maya_hair_tool] spine 変更に追従する rebuild 失敗: "
+            "{0}".format(exc))
+
+
+def _install_spine_watcher(group: str, spine_curve: str) -> None:
+    """Register a scriptJob on the spine's ``worldSpace[0]`` output
+    so any change (transform OR CV edit) triggers a coalesced
+    rebuild of the braid. Removes any prior watcher for this group
+    first so repeated calls don't stack listeners."""
+    group_uuids = cmds.ls(group, uuid=True) or []
+    if not group_uuids:
+        return
+    group_uuid = group_uuids[0]
+    _uninstall_spine_watcher(group_uuid)
+    shape = _spine_shape_of(spine_curve)
+    if not shape:
+        return
+    try:
+        job_id = cmds.scriptJob(
+            attributeChange=[
+                shape + ".worldSpace[0]",
+                lambda uid=group_uuid: _schedule_rebuild(uid),
+            ],
+            killWithScene=True,
+        )
+        _spine_watcher_jobs[group_uuid] = job_id
+    except Exception as exc:
+        cmds.warning(
+            "[maya_hair_tool] spine watcher 登録失敗: "
+            "{0}".format(exc))
+
+
+def _uninstall_spine_watcher(group_uuid: str) -> None:
+    """Kill the scriptJob associated with this Braid group (if
+    any). Safe to call when nothing is registered."""
+    job_id = _spine_watcher_jobs.pop(group_uuid, None)
+    if job_id is None:
+        return
+    try:
+        if cmds.scriptJob(exists=job_id):
+            cmds.scriptJob(kill=job_id, force=True)
+    except Exception:
+        pass
+
+
+def install_watchers_for_existing_braids() -> None:
+    """Walk every Braid group currently in the scene and register
+    its spine watcher. Called on UI startup so braids in a freshly-
+    opened scene follow spine edits without needing manual
+    re-registration."""
+    if cmds is None:
+        return
+    for g in (hair.list_hair_groups() or []):
+        if not is_braid_group(g):
+            continue
+        params = read_braid_params(g)
+        if not params or not params.get("spine_uuid"):
+            continue
+        spine_matches = cmds.ls(params["spine_uuid"]) or []
+        if not spine_matches:
+            continue
+        _install_spine_watcher(g, spine_matches[0])
+
+
 def _resolve_spine_transform(spine_curve: str) -> Optional[str]:
     """Given a curve (shape or transform), return its transform's
     full path. Constraints need to attach to a transform, not a
@@ -948,11 +1068,11 @@ def rebuild_braid(group: str, **overrides) -> None:
         # stale metadata behind.
         _stamp_tie_uuid(group, "")
 
-    # Refresh the spine → braid parentConstraint so post-rebuild
-    # transforms stay linked. Removing first prevents multiple
-    # stacked constraints when the user rebuilds repeatedly.
-    _remove_existing_braid_constraints(group)
-    _constrain_braid_to_spine(group, spine_curve)
+    # Re-install the spine watcher (scriptJob) after rebuild —
+    # covers the case where the spine reference changed between
+    # rebuilds. Also removes stale watchers so we don't accumulate
+    # duplicates across rebuilds.
+    _install_spine_watcher(group, spine_curve)
 
 
 def _next_braid_group_name() -> str:
@@ -1224,12 +1344,12 @@ def create_braid_from_spine(
             if tie_uuids:
                 _stamp_tie_uuid(stamp_target, tie_uuids[0])
 
-        # Constrain the Braid group (both sides) to the spine
-        # transform so moving the spine drags the whole braid with
-        # it. Skip when we couldn't materialise the group (no way
-        # to attach the constraint).
+        # Install a spine watcher (scriptJob) so subsequent
+        # transform moves AND CV edits on the spine trigger a live
+        # rebuild of the braid. Coalesces bursts into one deferred
+        # rebuild per idle cycle.
         if stamp_target and cmds.objExists(stamp_target):
-            _constrain_braid_to_spine(stamp_target, spine_curve)
+            _install_spine_watcher(stamp_target, spine_curve)
 
         if strand_meshes:
             try:
