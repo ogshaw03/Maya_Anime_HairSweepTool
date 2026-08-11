@@ -349,34 +349,48 @@ def _tail_shape(t: float) -> float:
     1 at the spine tip). Applied to each tail strand's radius so
     the tail reads as a real hair tassel below an elastic band.
 
-    Knot values reverse-engineered from a hand-authored reference
-    scene (ma/test001.ma) where the user sculpted the desired tail
-    silhouette by moving CVs directly. Extracted from that scene's
-    tail01 curve, normalised against the scene's braid_radius=0.5.
+    Knot table taken DIRECTLY from a hand-authored reference scene
+    (``ma/test001.ma``) — one knot per CV of the reference's
+    ``braid_001_tail01_curve``, normalised against that scene's
+    ``braid_radius = 0.5``. The v0.5.11 4-knot approximation
+    matched the peak but under-shot the middle and over-shot the
+    tail, producing a slender wispy silhouette instead of the
+    reference's compact teardrop.
 
-    Silhouette (4-knot piecewise linear):
+    Silhouette (12 knots, piecewise linear — 11 segments):
 
-    * t = 0.00 → 0.20  (pinch — compressed inside the elastic)
-    * t = 0.10 → 0.41  (puff — freed strands relax and poof out
-                        just below the tie; peak comes EARLY, not
-                        at 0.15 as the previous version assumed)
-    * t = 0.85 → 0.05  (narrow — strands converge close to the
-                        spine near the tips as they hang under
-                        their own weight; wispy tail silhouette)
-    * t = 1.00 → 0.12  (tiny tip flare — the very ends splay
-                        outward slightly, matching how real hair
-                        tips fan when the strand is otherwise thin)
+        i    t         shape    section
+        ─    ─────     ─────    ─────────────
+        0    0.000     0.21     pinch (inside elastic)
+        1    0.091     0.41     ▲ puff peak (early spike)
+        2    0.182     0.31     rapid drop after peak
+        3    0.273     0.27
+        4    0.364     0.25     ▽ shoulder — hair still full here
+        5    0.455     0.19
+        6    0.545     0.12
+        7    0.636     0.075    ─ tapering fast
+        8    0.727     0.041
+        9    0.818     0.034    ▽ narrow — near-converged on spine
+        10   0.909     0.043
+        11   1.000     0.114    ▲ tiny tip flare (wispy ends)
 
-    All knots < 1.0 so the tail never exceeds the braid radius
-    (no mushroom silhouette).
+    Uses whole-table lookup rather than analytical knots so the
+    shape stays identical to the reference at every sample when
+    ``num_samples`` matches (default 12).
     """
-    # Ordered (t, shape) knots. Piecewise-linear between them;
-    # clamped to first/last outside [0, 1].
     knots = (
-        (0.00, 0.20),
-        (0.10, 0.41),
-        (0.85, 0.05),
-        (1.00, 0.12),
+        (0.000, 0.210),
+        (0.091, 0.410),
+        (0.182, 0.310),
+        (0.273, 0.270),
+        (0.364, 0.250),
+        (0.455, 0.190),
+        (0.545, 0.120),
+        (0.636, 0.075),
+        (0.727, 0.041),
+        (0.818, 0.034),
+        (0.909, 0.043),
+        (1.000, 0.114),
     )
     if t <= knots[0][0]:
         return knots[0][1]

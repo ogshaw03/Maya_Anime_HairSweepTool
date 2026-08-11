@@ -119,9 +119,11 @@ DEFAULT_BRAID_DEPTH_RATIO = 0.4
 # Tail: fraction of the spine (from the tip end) reserved for the
 # "un-braided" tail where the strands come out of the tie and hang
 # as a ponytail-like tassel. 0 = braid runs all the way to the
-# spine tip, 0.5 = the bottom half is tail. 0.30 gives roughly the
-# 60/40 braid/tail split shown in typical hair-braid illustrations.
-DEFAULT_BRAID_TAIL_LENGTH = 0.30
+# spine tip, 0.5 = the bottom half is tail. 0.20 matches the
+# proportions of the user's hand-authored reference scene
+# (ma/test001.ma) — a longer tail stretches the puff silhouette
+# into a wispy elongated shape rather than the compact teardrop.
+DEFAULT_BRAID_TAIL_LENGTH = 0.20
 # Per-region density multipliers for the weave. 1.0 = uniform along
 # the spine. Higher values in one region = more crossings there
 # (tighter weave); lower = looser. Interpolated as a piecewise-
