@@ -323,8 +323,9 @@ class HairBuilderUI(object):
         cmds.separator(height=8, style="in", parent=right_body)
         self._build_duplicate_panel(right_body)
         cmds.separator(height=8, style="in", parent=right_body)
-        self._build_batch_panel(right_body)
-        cmds.separator(height=8, style="in", parent=right_body)
+        # Batch-edit panel removed in v0.5.13 — its knobs duplicated
+        # the Create panel's live-edit sliders (which already work
+        # against a multi-selection via the group-relative mode).
         self._build_footer(right_body)
 
         # scriptJob to auto-refresh the hair list when the scene
@@ -938,88 +939,29 @@ class HairBuilderUI(object):
         cmds.separator(height=6, style="none", parent=col)
 
         # --- Phase 6: Braid Generator (三つ編み) --------------------
-        # Own collapsible frame so it doesn't visually crowd the
-        # normal-hair sliders below. Placed just under the top
-        # "generate" button so both creation actions are near the
-        # top of the panel.
-        braid_frame = cmds.frameLayout(
-            label="三つ編み (Braid) — スパインカーブから 3 本自動生成",
+        # Outer frame contains two inner sub-frames — braid section
+        # and tail section — so the user can collapse whichever they
+        # aren't tuning right now. Tracked via ``self.braid_frame``
+        # so ``_on_selection_changed`` can auto-expand it when a
+        # Braid group is selected (and auto-collapse the generic
+        # hair sliders in the process).
+        self.braid_frame = cmds.frameLayout(
+            label="三つ編み (Braid)",
             collapsable=True, collapse=False, marginHeight=4,
             marginWidth=4, parent=col,
         )
         braid_col = cmds.columnLayout(
-            adjustableColumn=True, rowSpacing=3, parent=braid_frame)
+            adjustableColumn=True, rowSpacing=3,
+            parent=self.braid_frame)
         cmds.text(
             label=("スパイン用の NURBS カーブを 1 本選択して"
-                   "「三つ編みを作成」を押します。3 本の螺旋"
-                   "ストランドが生成され、自動で Braid_NN グループに"
-                   "まとめられます。各ストランドは通常の毛束と同じ"
-                   "スライダー / グループ調整ができます。\n"
-                   "※ 生成後は Braid_NN グループを選択すると、"
-                   "以下 4 スライダーがその三つ編みの現在値を"
-                   "表示し、ドラッグでリアルタイム反映します "
-                   "(スパインカーブが残っている前提)。"),
+                   "「三つ編みを作成」を押します。生成後は"
+                   "Braid_NN グループを選択するとスライダーが"
+                   "その braid の現在値を表示、ドラッグで"
+                   "リアルタイム反映。"),
             align="left", parent=braid_col,
             font="smallObliqueLabelFont", wordWrap=True,
         )
-        # Live-edit callbacks: drag = no undo recording (many
-        # micro-updates), change = single undo chunk. Matches the
-        # pattern used by the normal-hair sliders.
-        self.braid_turns = _slider_with_reset(
-            braid_col, "編みの周期 (Turns per Length)",
-            C.DEFAULT_BRAID_TURNS_PER_LENGTH, 0.05, 3.0,
-            drag_cb=self._cb_braid_turns_drag,
-            change_cb=self._cb_braid_turns_change)
-        self.braid_radius = _slider_with_reset(
-            braid_col, "編みの太さ (Braid Radius)",
-            C.DEFAULT_BRAID_RADIUS, 0.05, 5.0,
-            drag_cb=self._cb_braid_radius_drag,
-            change_cb=self._cb_braid_radius_change)
-        self.braid_thickness = _slider_with_reset(
-            braid_col, "ストランド 1 本の太さ (Strand Thickness)",
-            C.DEFAULT_BRAID_STRAND_THICKNESS, 0.01, 3.0,
-            drag_cb=self._cb_braid_thickness_drag,
-            change_cb=self._cb_braid_thickness_change)
-        self.braid_tip_taper = _slider_with_reset(
-            braid_col, "先細り (Tip Taper 0-1)",
-            C.DEFAULT_BRAID_TIP_TAPER, 0.0, 1.0,
-            drag_cb=self._cb_braid_tip_taper_drag,
-            change_cb=self._cb_braid_tip_taper_change)
-        self.braid_tail_length = _slider_with_reset(
-            braid_col, "尾の長さ (Tail Length 0-0.5)",
-            C.DEFAULT_BRAID_TAIL_LENGTH, 0.0, 0.5,
-            drag_cb=self._cb_braid_tail_drag,
-            change_cb=self._cb_braid_tail_change)
-        self.braid_tail_strand_count = _int_slider_with_reset(
-            braid_col, "尾のストランド本数",
-            C.DEFAULT_BRAID_TAIL_STRAND_COUNT, 2, 12,
-            drag_cb=self._cb_braid_tail_count_drag,
-            change_cb=self._cb_braid_tail_count_change)
-        self.braid_tail_thickness = _slider_with_reset(
-            braid_col, "尾ストランドの初期太さ",
-            C.DEFAULT_BRAID_TAIL_THICKNESS, 0.01, 3.0,
-            drag_cb=self._cb_braid_tail_thick_drag,
-            change_cb=self._cb_braid_tail_thick_change)
-        self.braid_tail_tip_taper = _slider_with_reset(
-            braid_col, "尾の先細り (Tail Tip Taper 0-1)",
-            C.DEFAULT_BRAID_TAIL_TIP_TAPER, 0.0, 1.0,
-            drag_cb=self._cb_braid_tail_tip_drag,
-            change_cb=self._cb_braid_tail_tip_change)
-        self.braid_density_top = _slider_with_reset(
-            braid_col, "上部密度 (Top Density)",
-            C.DEFAULT_BRAID_DENSITY_TOP, 0.1, 3.0,
-            drag_cb=self._cb_braid_density_top_drag,
-            change_cb=self._cb_braid_density_top_change)
-        self.braid_density_middle = _slider_with_reset(
-            braid_col, "中部密度 (Middle Density)",
-            C.DEFAULT_BRAID_DENSITY_MIDDLE, 0.1, 3.0,
-            drag_cb=self._cb_braid_density_middle_drag,
-            change_cb=self._cb_braid_density_middle_change)
-        self.braid_density_bottom = _slider_with_reset(
-            braid_col, "下部密度 (Bottom Density)",
-            C.DEFAULT_BRAID_DENSITY_BOTTOM, 0.1, 3.0,
-            drag_cb=self._cb_braid_density_bottom_drag,
-            change_cb=self._cb_braid_density_bottom_change)
         cmds.button(
             label="▶ 三つ編みを作成",
             height=32,
@@ -1028,11 +970,99 @@ class HairBuilderUI(object):
                         "Braid_NN グループにまとめます。"),
             command=self._on_create_braid, parent=braid_col,
         )
+        cmds.separator(height=4, style="none", parent=braid_col)
+
+        # --- 三つ編み部分 (braid / woven zone) ---------------------
+        braid_part = cmds.frameLayout(
+            label="三つ編み部分 (Braid zone)",
+            collapsable=True, collapse=False, marginHeight=3,
+            marginWidth=3, parent=braid_col,
+        )
+        braid_part_col = cmds.columnLayout(
+            adjustableColumn=True, rowSpacing=3, parent=braid_part)
+        self.braid_turns = _slider_with_reset(
+            braid_part_col, "編みの周期 (Turns per Length)",
+            C.DEFAULT_BRAID_TURNS_PER_LENGTH, 0.05, 3.0,
+            drag_cb=self._cb_braid_turns_drag,
+            change_cb=self._cb_braid_turns_change)
+        self.braid_radius = _slider_with_reset(
+            braid_part_col, "編みの太さ (Braid Radius)",
+            C.DEFAULT_BRAID_RADIUS, 0.05, 5.0,
+            drag_cb=self._cb_braid_radius_drag,
+            change_cb=self._cb_braid_radius_change)
+        self.braid_thickness = _slider_with_reset(
+            braid_part_col, "ストランド 1 本の太さ (Strand Thickness)",
+            C.DEFAULT_BRAID_STRAND_THICKNESS, 0.01, 3.0,
+            drag_cb=self._cb_braid_thickness_drag,
+            change_cb=self._cb_braid_thickness_change)
+        self.braid_tip_taper = _slider_with_reset(
+            braid_part_col, "先細り (Tip Taper 0-1)",
+            C.DEFAULT_BRAID_TIP_TAPER, 0.0, 1.0,
+            drag_cb=self._cb_braid_tip_taper_drag,
+            change_cb=self._cb_braid_tip_taper_change)
+        self.braid_density_top = _slider_with_reset(
+            braid_part_col, "上部密度 (Top Density)",
+            C.DEFAULT_BRAID_DENSITY_TOP, 0.1, 3.0,
+            drag_cb=self._cb_braid_density_top_drag,
+            change_cb=self._cb_braid_density_top_change)
+        self.braid_density_middle = _slider_with_reset(
+            braid_part_col, "中部密度 (Middle Density)",
+            C.DEFAULT_BRAID_DENSITY_MIDDLE, 0.1, 3.0,
+            drag_cb=self._cb_braid_density_middle_drag,
+            change_cb=self._cb_braid_density_middle_change)
+        self.braid_density_bottom = _slider_with_reset(
+            braid_part_col, "下部密度 (Bottom Density)",
+            C.DEFAULT_BRAID_DENSITY_BOTTOM, 0.1, 3.0,
+            drag_cb=self._cb_braid_density_bottom_drag,
+            change_cb=self._cb_braid_density_bottom_change)
+
+        # --- 尾部分 (tail zone) -----------------------------------
+        tail_part = cmds.frameLayout(
+            label="尾部分 (Tail zone)",
+            collapsable=True, collapse=False, marginHeight=3,
+            marginWidth=3, parent=braid_col,
+        )
+        tail_part_col = cmds.columnLayout(
+            adjustableColumn=True, rowSpacing=3, parent=tail_part)
+        self.braid_tail_length = _slider_with_reset(
+            tail_part_col, "尾の長さ (Tail Length 0-0.5)",
+            C.DEFAULT_BRAID_TAIL_LENGTH, 0.0, 0.5,
+            drag_cb=self._cb_braid_tail_drag,
+            change_cb=self._cb_braid_tail_change)
+        self.braid_tail_strand_count = _int_slider_with_reset(
+            tail_part_col, "尾のストランド本数",
+            C.DEFAULT_BRAID_TAIL_STRAND_COUNT, 2, 12,
+            drag_cb=self._cb_braid_tail_count_drag,
+            change_cb=self._cb_braid_tail_count_change)
+        self.braid_tail_thickness = _slider_with_reset(
+            tail_part_col, "尾ストランドの初期太さ",
+            C.DEFAULT_BRAID_TAIL_THICKNESS, 0.01, 3.0,
+            drag_cb=self._cb_braid_tail_thick_drag,
+            change_cb=self._cb_braid_tail_thick_change)
+        self.braid_tail_tip_taper = _slider_with_reset(
+            tail_part_col, "尾の先細り (Tail Tip Taper 0-1)",
+            C.DEFAULT_BRAID_TAIL_TIP_TAPER, 0.0, 1.0,
+            drag_cb=self._cb_braid_tail_tip_drag,
+            change_cb=self._cb_braid_tail_tip_change)
         cmds.separator(height=6, style="none", parent=col)
 
-        cmds.text(label="プロファイル", align="left", parent=col)
+        # Generic hair sliders — everything below is for one-off /
+        # normal hair strands, NOT for Braid_NN groups. Wrapped in
+        # its own collapsible frame so ``_on_selection_changed`` can
+        # auto-collapse it when the user has a Braid group selected
+        # (all the shape-controlling knobs there live in the braid
+        # section above), and re-expand it for normal strands.
+        self.hair_frame = cmds.frameLayout(
+            label="通常の毛束スライダー (Hair strand)",
+            collapsable=True, collapse=False, marginHeight=4,
+            marginWidth=4, parent=col,
+        )
+        hair_col = cmds.columnLayout(
+            adjustableColumn=True, rowSpacing=4, parent=self.hair_frame)
+
+        cmds.text(label="プロファイル", align="left", parent=hair_col)
         self.profile_menu = cmds.optionMenu(
-            parent=col, changeCommand=self._cb_profile_change)
+            parent=hair_col, changeCommand=self._cb_profile_change)
         for display, _key in _PROFILE_DISPLAY:
             cmds.menuItem(label=display)
 
@@ -1040,57 +1070,57 @@ class HairBuilderUI(object):
         # rectangle dims, wave amplitude etc.) are rebuilt on
         # profile change so only relevant knobs are shown.
         self.profile_specific_layout = cmds.columnLayout(
-            adjustableColumn=True, rowSpacing=4, parent=col)
+            adjustableColumn=True, rowSpacing=4, parent=hair_col)
         self._rebuild_profile_specific_sliders(C.PROFILE_CIRCLE)
 
         self.thickness = _slider_with_reset(
-            col, "太さ (均一)", C.DEFAULT_THICKNESS, 0.01, 5.0,
+            hair_col, "太さ (均一)", C.DEFAULT_THICKNESS, 0.01, 5.0,
             drag_cb=self._cb_thickness_drag,
             change_cb=self._cb_thickness_change)
         self.width = _slider_with_reset(
-            col, "幅 (X)", C.DEFAULT_WIDTH, 0.01, 5.0,
+            hair_col, "幅 (X)", C.DEFAULT_WIDTH, 0.01, 5.0,
             drag_cb=self._cb_width_drag,
             change_cb=self._cb_width_change)
         self.height = _slider_with_reset(
-            col, "高さ (Y)", C.DEFAULT_HEIGHT, 0.01, 5.0,
+            hair_col, "高さ (Y)", C.DEFAULT_HEIGHT, 0.01, 5.0,
             drag_cb=self._cb_height_drag,
             change_cb=self._cb_height_change)
         self.root = _slider_with_reset(
-            col, "根本スケール", C.DEFAULT_ROOT_SCALE, 0.0, 3.0,
+            hair_col, "根本スケール", C.DEFAULT_ROOT_SCALE, 0.0, 3.0,
             drag_cb=self._cb_root_drag,
             change_cb=self._cb_root_change)
         self.middle = _slider_with_reset(
-            col, "中間スケール", C.DEFAULT_MIDDLE_SCALE, 0.0, 3.0,
+            hair_col, "中間スケール", C.DEFAULT_MIDDLE_SCALE, 0.0, 3.0,
             drag_cb=self._cb_middle_drag,
             change_cb=self._cb_middle_change)
         self.tip = _slider_with_reset(
-            col, "先端スケール", C.DEFAULT_TIP_SCALE, 0.0, 3.0,
+            hair_col, "先端スケール", C.DEFAULT_TIP_SCALE, 0.0, 3.0,
             drag_cb=self._cb_tip_drag,
             change_cb=self._cb_tip_change)
         # Inline taper curve editor (works without leaving the panel).
-        self._build_taper_editor(col)
+        self._build_taper_editor(hair_col)
 
         cmds.button(
             label="テーパーカーブを Attribute Editor で開く",
             annotation=("Maya ネイティブの Taper Curve ramp widget を"
                         "開きます。カーブエディタと同じ内容を編集"
                         "できます。"),
-            command=self._on_open_taper_editor, parent=col,
+            command=self._on_open_taper_editor, parent=hair_col,
         )
         self.twist = _slider_with_reset(
-            col, "ねじれ", C.DEFAULT_TWIST, -720.0, 720.0,
+            hair_col, "ねじれ", C.DEFAULT_TWIST, -720.0, 720.0,
             drag_cb=self._cb_twist_drag,
             change_cb=self._cb_twist_change)
         self.rotation = _slider_with_reset(
-            col, "回転", C.DEFAULT_ROTATION, -360.0, 360.0,
+            hair_col, "回転", C.DEFAULT_ROTATION, -360.0, 360.0,
             drag_cb=self._cb_rotation_drag,
             change_cb=self._cb_rotation_change)
         self.subdiv_axis = _int_slider_with_reset(
-            col, "断面分割数", C.DEFAULT_SUBDIVISIONS_AXIS, 3, 32,
+            hair_col, "断面分割数", C.DEFAULT_SUBDIVISIONS_AXIS, 3, 32,
             drag_cb=self._cb_subdiv_axis_drag,
             change_cb=self._cb_subdiv_axis_change)
         self.subdiv_length = _int_slider_with_reset(
-            col, "長さ分割数", C.DEFAULT_SUBDIVISIONS_LENGTH, 1, 128,
+            hair_col, "長さ分割数", C.DEFAULT_SUBDIVISIONS_LENGTH, 1, 128,
             drag_cb=self._cb_subdiv_length_drag,
             change_cb=self._cb_subdiv_length_change)
 
@@ -1099,12 +1129,12 @@ class HairBuilderUI(object):
                    "書き込みます。既定 12 付近では変化しません — "
                    "実際にポリゴン数が増えるのは 30 以上 (60 で "
                    "約 4 倍、100 以上で更に細かく)。"),
-            align="left", parent=col, font="smallObliqueLabelFont",
+            align="left", parent=hair_col, font="smallObliqueLabelFont",
             wordWrap=True,
         )
 
         cmds.button(label="選択カーブから毛束を生成",
-                    height=32, command=self._on_create, parent=col)
+                    height=32, command=self._on_create, parent=hair_col)
 
     def _on_open_taper_editor(self, *_):
         """Open Maya's Attribute Editor for the selected sweep node
@@ -1323,11 +1353,20 @@ class HairBuilderUI(object):
             self._sync_taper_editor_from_creator()
 
         # Braid sliders — if the current selection maps back to a
-        # Braid_NN group, populate the 4 braid sliders with that
-        # group's stored params so the sliders reflect what they'll
-        # affect on the next drag.
+        # Braid_NN group, populate the sliders with that group's
+        # stored params so they reflect what they'll affect on the
+        # next drag.
         try:
             self._sync_braid_sliders_from_selection()
+        except Exception:
+            pass
+        # Auto-swap Braid frame vs generic Hair frame based on
+        # what's selected: a braid-owned node (group or any of its
+        # strand children) → braid frame open, hair frame folded;
+        # anything else → the reverse. Users can still expand the
+        # folded frame manually if they want to peek.
+        try:
+            self._sync_create_panel_frames()
         except Exception:
             pass
 
@@ -1640,6 +1679,27 @@ class HairBuilderUI(object):
 
     def _cb_braid_density_bottom_change(self, value):
         self._braid_live_apply("density_bottom", value, True)
+
+    def _sync_create_panel_frames(self):
+        """Expand the braid frame + collapse the hair frame when the
+        current selection is a Braid_NN group (or one of its child
+        strands); expand hair + collapse braid otherwise. Both
+        frames stay ``collapsable=True`` so the user can override
+        manually if they want to work on the other kind."""
+        braid_owned = self._selected_braid_group() is not None
+        for frame, want_open in (
+            (getattr(self, "braid_frame", None), braid_owned),
+            (getattr(self, "hair_frame", None), not braid_owned),
+        ):
+            if not frame:
+                continue
+            try:
+                if not cmds.frameLayout(frame, exists=True):
+                    continue
+                cmds.frameLayout(
+                    frame, edit=True, collapse=not want_open)
+            except Exception:
+                pass
 
     def _sync_braid_sliders_from_selection(self):
         """Populate the 4 braid sliders with the stored values of
