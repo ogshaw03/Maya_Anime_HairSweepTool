@@ -534,6 +534,7 @@ _ATTR_TIE_UUID = "braidHairTieUuid"      # UUID of the elastic torus mesh
 _ATTR_TAIL_STRAND_UUIDS = "braidTailMeshUuids"  # pipe-joined tail mesh UUIDs
 _ATTR_TAIL_STRAND_COUNT = "braidTailStrandCount"
 _ATTR_TAIL_THICKNESS = "braidTailThickness"
+_ATTR_TAIL_TIP_TAPER = "braidTailTipTaper"
 
 
 def _ensure_bool_attr(node: str, attr: str) -> None:
@@ -553,7 +554,8 @@ def _ensure_float_attr(node: str, attr: str) -> None:
 
 def _stamp_tail_meta(group: str, tail_mesh_uuids: List[str],
                       tail_strand_count: int,
-                      tail_thickness: float) -> None:
+                      tail_thickness: float,
+                      tail_tip_taper: float) -> None:
     """Stamp the tail-strand metadata so rebuild can decide whether
     to update tail CVs in place (count matches) or fully recreate
     (count changed)."""
@@ -568,6 +570,9 @@ def _stamp_tail_meta(group: str, tail_mesh_uuids: List[str],
     _ensure_float_attr(group, _ATTR_TAIL_THICKNESS)
     cmds.setAttr(group + "." + _ATTR_TAIL_THICKNESS,
                  float(tail_thickness))
+    _ensure_float_attr(group, _ATTR_TAIL_TIP_TAPER)
+    cmds.setAttr(group + "." + _ATTR_TAIL_TIP_TAPER,
+                 float(tail_tip_taper))
 
 
 def _stamp_tie_uuid(group: str, tie_uuid: str) -> None:
@@ -685,6 +690,9 @@ def read_braid_params(group: str) -> Optional[dict]:
             "tail_thickness":
                 _read_float_or(_ATTR_TAIL_THICKNESS,
                                C.DEFAULT_BRAID_TAIL_THICKNESS),
+            "tail_tip_taper":
+                _read_float_or(_ATTR_TAIL_TIP_TAPER,
+                               C.DEFAULT_BRAID_TAIL_TIP_TAPER),
         }
     except Exception:
         return None
@@ -955,6 +963,7 @@ def _create_tail_strands(
     braid_radius: float,
     tail_strand_count: int,
     tail_thickness: float,
+    tail_tip_taper: float,
     parent_group: Optional[str],
     base_name: str,
 ) -> List[str]:
@@ -999,6 +1008,7 @@ def _create_tail_strands(
         # tail strand still tapers to a hair-like point at its tip.
         hair.create_hair_from_selected_curves(
             thickness=tail_thickness,
+            tip_scale=tail_tip_taper,
             subdivisions_axis=C.DEFAULT_BRAID_TAIL_SUBDIV_AXIS,
             subdivisions_length=C.DEFAULT_BRAID_TAIL_SUBDIV_LENGTH)
     except Exception as exc:
@@ -1087,6 +1097,7 @@ def _update_tail_strands_in_place(
     tail_length: float,
     braid_radius: float,
     tail_thickness: float,
+    tail_tip_taper: float,
     tail_mesh_uuids: List[str],
 ) -> bool:
     """When the tail strand COUNT hasn't changed, update each tail
@@ -1112,10 +1123,11 @@ def _update_tail_strands_in_place(
         if len(pts) < 2:
             return False
         _replace_curve_cvs(curve, pts)
-    # Propagate the tail-thickness slider value to every tail
-    # sweepMeshCreator so the "尾ストランドの初期太さ" slider still
-    # takes effect during in-place rebuild — the in-place path used
-    # to skip this and the value only landed on full recreate.
+    # Propagate the tail-thickness AND tail-tip-taper slider values
+    # to every tail sweepMeshCreator so both sliders take effect
+    # during in-place rebuild (the in-place path used to skip
+    # thickness — and now also handles tip taper via the
+    # taperCurve ramp).
     for uid in tail_mesh_uuids:
         matches = cmds.ls(uid) or []
         if not matches:
@@ -1126,6 +1138,15 @@ def _update_tail_strands_in_place(
             try:
                 cmds.setAttr(c + ".scaleProfileUniform", True)
                 cmds.setAttr(c + ".scaleProfileX", tail_thickness)
+            except Exception:
+                pass
+            try:
+                # Root/middle stay at 1.0 (uniform along most of
+                # the length); the "先細り" slider is exclusively
+                # the tip value.
+                hair.set_taper_profile(
+                    c, root_scale=1.0, middle_scale=1.0,
+                    tip_scale=float(tail_tip_taper))
             except Exception:
                 pass
     return True
@@ -1503,26 +1524,29 @@ def rebuild_braid(group: str, **overrides) -> None:
         C.DEFAULT_BRAID_TAIL_STRAND_COUNT))
     tail_thickness = float(params.get(
         "tail_thickness", C.DEFAULT_BRAID_TAIL_THICKNESS))
+    tail_tip_taper = float(params.get(
+        "tail_tip_taper", C.DEFAULT_BRAID_TAIL_TIP_TAPER))
     tail_updated_in_place = False
     if (existing_tail_uuids
             and len(existing_tail_uuids) == desired_count
             and params["tail_length"] > 1e-4):
         tail_updated_in_place = _update_tail_strands_in_place(
             group, spine_curve, params["tail_length"],
-            params["radius"], tail_thickness, existing_tail_uuids)
+            params["radius"], tail_thickness, tail_tip_taper,
+            existing_tail_uuids)
         if tail_updated_in_place:
             # In-place path skips _stamp_tail_meta by design (UUIDs
-            # unchanged) — but ``tail_thickness`` may have changed
-            # and must be persisted for the next selection-sync.
+            # unchanged) — but the numeric params may have
+            # changed and must be persisted for selection-sync.
             _stamp_tail_meta(
                 group, existing_tail_uuids, desired_count,
-                tail_thickness)
+                tail_thickness, tail_tip_taper)
     if not tail_updated_in_place:
         _delete_existing_tail_strands(group)
         new_tail_meshes = _create_tail_strands(
             spine_curve, params["tail_length"],
             params["radius"], desired_count, tail_thickness,
-            group, base_name_hint)
+            tail_tip_taper, group, base_name_hint)
         new_tail_uuids: List[str] = []
         for m in new_tail_meshes:
             try:
@@ -1532,7 +1556,7 @@ def rebuild_braid(group: str, **overrides) -> None:
             except Exception:
                 pass
         _stamp_tail_meta(group, new_tail_uuids, desired_count,
-                          tail_thickness)
+                          tail_thickness, tail_tip_taper)
 
     # Hair tie — replace in-place so radius / position stay in sync
     # with the current params. Delete any existing tie, then build a
@@ -1592,6 +1616,7 @@ def create_braid_from_spine(
     tail_length: float = C.DEFAULT_BRAID_TAIL_LENGTH,
     tail_strand_count: int = C.DEFAULT_BRAID_TAIL_STRAND_COUNT,
     tail_thickness: float = C.DEFAULT_BRAID_TAIL_THICKNESS,
+    tail_tip_taper: float = C.DEFAULT_BRAID_TAIL_TIP_TAPER,
     density_top: float = C.DEFAULT_BRAID_DENSITY_TOP,
     density_middle: float = C.DEFAULT_BRAID_DENSITY_MIDDLE,
     density_bottom: float = C.DEFAULT_BRAID_DENSITY_BOTTOM,
@@ -1830,6 +1855,7 @@ def create_braid_from_spine(
             "density_bottom": density_bottom,
             "tail_strand_count": tail_strand_count,
             "tail_thickness": tail_thickness,
+            "tail_tip_taper": tail_tip_taper,
         }
         stamp_target = None
         if group and strand_meshes:
@@ -1849,7 +1875,7 @@ def create_braid_from_spine(
         # they group visually with the woven strands.
         tail_meshes = _create_tail_strands(
             spine_curve, tail_length, radius,
-            tail_strand_count, tail_thickness,
+            tail_strand_count, tail_thickness, tail_tip_taper,
             stamp_target, base_name)
         tail_uuids: List[str] = []
         for m in tail_meshes:
@@ -1862,7 +1888,7 @@ def create_braid_from_spine(
         if stamp_target and cmds.objExists(stamp_target):
             _stamp_tail_meta(
                 stamp_target, tail_uuids, tail_strand_count,
-                tail_thickness)
+                tail_thickness, tail_tip_taper)
 
         # Hair tie — a small torus around the spine at the tie
         # point. Only created when there IS a tail (nothing to tie

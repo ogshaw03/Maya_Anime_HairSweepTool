@@ -139,6 +139,11 @@ DEFAULT_BRAID_SAMPLES = 32             # helix smoothness; 32 covers most spines
 DEFAULT_BRAID_TAIL_STRAND_COUNT = 6
 DEFAULT_BRAID_TAIL_SAMPLES = 12       # samples along each tail strand curve
 DEFAULT_BRAID_TAIL_THICKNESS = 0.15   # initial strand thickness
+# Tail tip taper — writes to each tail sweepMeshCreator's
+# ``taperCurve`` tip value (root and middle stay at 1.0). 0.0 =
+# strand comes to a needle point at the tip, 1.0 = uniform
+# thickness the whole way. Default 0.05 gives sharp hair-like tips.
+DEFAULT_BRAID_TAIL_TIP_TAPER = 0.05
 
 # sweepMeshCreator subdivisions used when the braid feeds curves
 # through hair.create_hair_from_selected_curves. Overriding the

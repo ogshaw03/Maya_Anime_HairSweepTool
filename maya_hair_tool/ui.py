@@ -1000,6 +1000,11 @@ class HairBuilderUI(object):
             C.DEFAULT_BRAID_TAIL_THICKNESS, 0.01, 3.0,
             drag_cb=self._cb_braid_tail_thick_drag,
             change_cb=self._cb_braid_tail_thick_change)
+        self.braid_tail_tip_taper = _slider_with_reset(
+            braid_col, "尾の先細り (Tail Tip Taper 0-1)",
+            C.DEFAULT_BRAID_TAIL_TIP_TAPER, 0.0, 1.0,
+            drag_cb=self._cb_braid_tail_tip_drag,
+            change_cb=self._cb_braid_tail_tip_change)
         self.braid_density_top = _slider_with_reset(
             braid_col, "上部密度 (Top Density)",
             C.DEFAULT_BRAID_DENSITY_TOP, 0.1, 3.0,
@@ -1508,6 +1513,8 @@ class HairBuilderUI(object):
                     self.braid_tail_strand_count),
                 tail_thickness=_read_float(
                     self.braid_tail_thickness),
+                tail_tip_taper=_read_float(
+                    self.braid_tail_tip_taper),
                 density_top=_read_float(self.braid_density_top),
                 density_middle=_read_float(self.braid_density_middle),
                 density_bottom=_read_float(self.braid_density_bottom),
@@ -1610,6 +1617,12 @@ class HairBuilderUI(object):
     def _cb_braid_tail_thick_change(self, value):
         self._braid_live_apply("tail_thickness", value, True)
 
+    def _cb_braid_tail_tip_drag(self, value):
+        self._braid_live_apply("tail_tip_taper", value, False)
+
+    def _cb_braid_tail_tip_change(self, value):
+        self._braid_live_apply("tail_tip_taper", value, True)
+
     def _cb_braid_density_top_drag(self, value):
         self._braid_live_apply("density_top", value, False)
 
@@ -1668,6 +1681,11 @@ class HairBuilderUI(object):
                 value=params.get(
                     "tail_thickness",
                     C.DEFAULT_BRAID_TAIL_THICKNESS))
+            cmds.floatSliderGrp(
+                self.braid_tail_tip_taper, edit=True,
+                value=params.get(
+                    "tail_tip_taper",
+                    C.DEFAULT_BRAID_TAIL_TIP_TAPER))
             cmds.floatSliderGrp(
                 self.braid_density_top, edit=True,
                 value=params["density_top"])
