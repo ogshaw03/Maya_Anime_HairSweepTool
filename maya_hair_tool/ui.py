@@ -1109,6 +1109,28 @@ class HairBuilderUI(object):
             adjustableColumn=True, rowSpacing=4, parent=hair_col)
         self._rebuild_profile_specific_sliders(C.PROFILE_CIRCLE)
 
+        # Subdivision sliders directly under the profile-specific
+        # block — user grouping request: 断面/長さ 分割数 are
+        # conceptually mesh-density knobs that pair with 側面数
+        # (which lives in the profile-specific area for the
+        # Regular Polygon profile).
+        self.subdiv_axis = _int_slider_with_reset(
+            hair_col, "断面分割数", C.DEFAULT_SUBDIVISIONS_AXIS, 3, 32,
+            drag_cb=self._cb_subdiv_axis_drag,
+            change_cb=self._cb_subdiv_axis_change)
+        self.subdiv_length = _int_slider_with_reset(
+            hair_col, "長さ分割数", C.DEFAULT_SUBDIVISIONS_LENGTH, 1, 128,
+            drag_cb=self._cb_subdiv_length_drag,
+            change_cb=self._cb_subdiv_length_change)
+        cmds.text(
+            label=("長さ分割数は interpolationPrecision (精度値) を"
+                   "書き込みます。既定 12 付近では変化しません — "
+                   "実際にポリゴン数が増えるのは 30 以上 (60 で "
+                   "約 4 倍、100 以上で更に細かく)。"),
+            align="left", parent=hair_col, font="smallObliqueLabelFont",
+            wordWrap=True,
+        )
+
         self.thickness = _slider_with_reset(
             hair_col, "太さ (均一)", C.DEFAULT_THICKNESS, 0.01, 5.0,
             drag_cb=self._cb_thickness_drag,
@@ -1121,19 +1143,17 @@ class HairBuilderUI(object):
             hair_col, "高さ (Y)", C.DEFAULT_HEIGHT, 0.01, 5.0,
             drag_cb=self._cb_height_drag,
             change_cb=self._cb_height_change)
-        self.root = _slider_with_reset(
-            hair_col, "根本スケール", C.DEFAULT_ROOT_SCALE, 0.0, 3.0,
-            drag_cb=self._cb_root_drag,
-            change_cb=self._cb_root_change)
-        self.middle = _slider_with_reset(
-            hair_col, "中間スケール", C.DEFAULT_MIDDLE_SCALE, 0.0, 3.0,
-            drag_cb=self._cb_middle_drag,
-            change_cb=self._cb_middle_change)
-        self.tip = _slider_with_reset(
-            hair_col, "先端スケール", C.DEFAULT_TIP_SCALE, 0.0, 3.0,
-            drag_cb=self._cb_tip_drag,
-            change_cb=self._cb_tip_change)
-        # Inline taper curve editor (works without leaving the panel).
+        # 根本 / 中間 / 先端 スケール sliders removed in v0.5.18 —
+        # they wrote the same 3-point ramp the taper editor manages,
+        # so touching them destroyed any custom multi-point curve
+        # the user had built with the editor. Attributes kept as
+        # None so the reset menu and _sync_sliders_to_creator can
+        # continue to null-guard past them.
+        self.root = None
+        self.middle = None
+        self.tip = None
+        # Inline taper curve editor — now the sole control for the
+        # length-taper profile.
         self._build_taper_editor(hair_col)
 
         cmds.button(
@@ -1151,23 +1171,6 @@ class HairBuilderUI(object):
             hair_col, "回転", C.DEFAULT_ROTATION, -360.0, 360.0,
             drag_cb=self._cb_rotation_drag,
             change_cb=self._cb_rotation_change)
-        self.subdiv_axis = _int_slider_with_reset(
-            hair_col, "断面分割数", C.DEFAULT_SUBDIVISIONS_AXIS, 3, 32,
-            drag_cb=self._cb_subdiv_axis_drag,
-            change_cb=self._cb_subdiv_axis_change)
-        self.subdiv_length = _int_slider_with_reset(
-            hair_col, "長さ分割数", C.DEFAULT_SUBDIVISIONS_LENGTH, 1, 128,
-            drag_cb=self._cb_subdiv_length_drag,
-            change_cb=self._cb_subdiv_length_change)
-
-        cmds.text(
-            label=("長さ分割数は interpolationPrecision (精度値) を"
-                   "書き込みます。既定 12 付近では変化しません — "
-                   "実際にポリゴン数が増えるのは 30 以上 (60 で "
-                   "約 4 倍、100 以上で更に細かく)。"),
-            align="left", parent=hair_col, font="smallObliqueLabelFont",
-            wordWrap=True,
-        )
 
         cmds.button(label="選択カーブから毛束を生成",
                     height=32, command=self._on_create, parent=hair_col)
@@ -1555,9 +1558,12 @@ class HairBuilderUI(object):
             thickness=_read_float(self.thickness),
             width=_read_float(self.width),
             height=_read_float(self.height),
-            root_scale=_read_float(self.root),
-            middle_scale=_read_float(self.middle),
-            tip_scale=_read_float(self.tip),
+            # v0.5.18 — root/middle/tip sliders removed. Use the
+            # constant defaults; users edit the resulting taper via
+            # the curve editor after creation.
+            root_scale=C.DEFAULT_ROOT_SCALE,
+            middle_scale=C.DEFAULT_MIDDLE_SCALE,
+            tip_scale=C.DEFAULT_TIP_SCALE,
             twist=_read_float(self.twist),
             rotation=_read_float(self.rotation),
             subdivisions_axis=_read_int(self.subdiv_axis),
