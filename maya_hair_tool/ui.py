@@ -1116,6 +1116,15 @@ class HairBuilderUI(object):
                 values["taper_tip"] = t
             except Exception:
                 pass
+            # Full ramp snapshot — lets ``_set_taper`` in relative
+            # mode scale each custom point in place instead of
+            # nuking a multi-point ramp down to 3 sampled ones.
+            try:
+                entries = hair.read_taper_ramp_entries(c)
+                if entries:
+                    values["taper_entries"] = entries
+            except Exception:
+                pass
             self._baselines[c] = values
 
     def _reset_sliders_to_identity(self):
@@ -1633,16 +1642,35 @@ class HairBuilderUI(object):
     def _set_uniform_scale(self, value):
         """Set Thickness = uniform scale.
 
-        ``scaleProfileUniform`` is a *bool* (link X ↔ Y). We turn it
-        on, then set ``scaleProfileX`` — Y auto-mirrors. Preset ratios
-        (Oval Y=0.55 etc.) are lost when Thickness is touched; that
-        matches Maya's Uniform-mode behaviour.
+        Behaviour depends on adjust mode:
 
-        In relative mode, ``value`` is a multiplier: X is set to
-        ``baseline_X × value``. Y follows via the Uniform toggle.
+        * **Absolute** (single strand): flip ``scaleProfileUniform``
+          on, write ``scaleProfileX = value``. Y auto-mirrors X via
+          Maya's Uniform link. Matches "set the strand thickness to
+          exactly N" semantics.
+        * **Relative** (group / multi): multiply BOTH X and Y by the
+          slider value independently and DO NOT touch
+          ``scaleProfileUniform``. Toggling Uniform mid-selection
+          would snap Y to X (or unlink them), causing a sudden
+          shape change the user didn't ask for — the whole point of
+          the multiplier mode is to scale each strand proportionally
+          while preserving its individual X/Y ratio.
         """
         def setter(c):
-            v = self._resolve_value(c, "scaleProfileX", value, cast=float)
+            if self._adjust_mode == "relative":
+                vx = self._resolve_value(
+                    c, "scaleProfileX", value, cast=float)
+                vy = self._resolve_value(
+                    c, "scaleProfileY", value, cast=float)
+                if cmds.attributeQuery(
+                        "scaleProfileX", node=c, exists=True):
+                    cmds.setAttr(c + ".scaleProfileX", vx)
+                if cmds.attributeQuery(
+                        "scaleProfileY", node=c, exists=True):
+                    cmds.setAttr(c + ".scaleProfileY", vy)
+                return
+            # Absolute mode below.
+            v = float(value)
             if cmds.attributeQuery("scaleProfileUniform",
                                     node=c, exists=True):
                 cmds.setAttr(c + ".scaleProfileUniform", True)
@@ -1655,12 +1683,23 @@ class HairBuilderUI(object):
         return setter
 
     def _set_axis_scale(self, axis_attr, value):
-        """Set Width (X) or Height (Y) independently by first turning
-        Uniform off so the sibling axis isn't force-linked.
+        """Set Width (X) or Height (Y).
 
-        In relative mode, uses ``baseline[axis_attr] × value``."""
+        * **Absolute** (single strand): flip Uniform OFF (so X and Y
+          can be edited independently), then write the axis. Matches
+          "set the width/height to exactly N" semantics.
+        * **Relative** (group / multi): multiply only the target axis
+          by the slider. Do NOT touch Uniform — flipping it mid-drag
+          snaps X ↔ Y and causes a visible shape jump.
+        """
         def setter(c):
-            v = self._resolve_value(c, axis_attr, value, cast=float)
+            if self._adjust_mode == "relative":
+                v = self._resolve_value(c, axis_attr, value, cast=float)
+                if cmds.attributeQuery(axis_attr, node=c, exists=True):
+                    cmds.setAttr(c + "." + axis_attr, v)
+                return
+            # Absolute mode below.
+            v = float(value)
             if cmds.attributeQuery("scaleProfileUniform",
                                     node=c, exists=True):
                 cmds.setAttr(c + ".scaleProfileUniform", False)
@@ -1692,24 +1731,64 @@ class HairBuilderUI(object):
             cmds.setAttr(c + "." + attr, cast(value))
         return setter
 
+    @staticmethod
+    def _piecewise_taper_multiplier(pos, root_mul, middle_mul, tip_mul):
+        """Piecewise-linear multiplier at ramp position ``pos`` (0..1),
+        with control points ``(0, root_mul)``, ``(0.5, middle_mul)``,
+        ``(1.0, tip_mul)``. Applied per baseline ramp point so custom
+        multi-point ramps get scaled smoothly instead of collapsed to
+        3 points."""
+        if pos <= 0.0:
+            return root_mul
+        if pos >= 1.0:
+            return tip_mul
+        if pos <= 0.5:
+            t = pos / 0.5
+            return root_mul * (1.0 - t) + middle_mul * t
+        t = (pos - 0.5) / 0.5
+        return middle_mul * (1.0 - t) + tip_mul * t
+
     def _set_taper(self, root=None, middle=None, tip=None):
         def setter(c):
             existing = hair.read_taper_values(c)
             if self._adjust_mode == "relative":
-                # Multiply per-strand baseline (captured at select
-                # time) by the slider multiplier. Positions the
-                # user didn't touch (None sliders) stay untouched.
+                # Relative: scale the FULL baseline ramp point-by-
+                # point using a piecewise-linear multiplier so custom
+                # ramps (>3 points) survive. Falls back to the 3-
+                # sample approach when no full-ramp baseline was
+                # captured (e.g. attribute read failed at snapshot
+                # time).
                 baseline = self._baselines.get(c, {})
+                root_mul = float(root) if root is not None else 1.0
+                middle_mul = (float(middle)
+                              if middle is not None else 1.0)
+                tip_mul = float(tip) if tip is not None else 1.0
+                entries = baseline.get("taper_entries")
+                if entries:
+                    new_entries = []
+                    for pos, val, interp in entries:
+                        m = self._piecewise_taper_multiplier(
+                            pos, root_mul, middle_mul, tip_mul)
+                        new_entries.append((pos, val * m, interp))
+                    hair.write_taper_ramp_entries(c, new_entries)
+                    return
+                # Fallback path — old 3-point behaviour.
                 br = baseline.get("taper_root", existing[0])
                 bm = baseline.get("taper_middle", existing[1])
                 bt = baseline.get("taper_tip", existing[2])
-                r = float(br) * float(root) if root is not None else existing[0]
-                m = float(bm) * float(middle) if middle is not None else existing[1]
-                t = float(bt) * float(tip) if tip is not None else existing[2]
-            else:
-                r = existing[0] if root is None else float(root)
-                m = existing[1] if middle is None else float(middle)
-                t = existing[2] if tip is None else float(tip)
+                r = float(br) * root_mul if root is not None else existing[0]
+                m = float(bm) * middle_mul if middle is not None else existing[1]
+                t = float(bt) * tip_mul if tip is not None else existing[2]
+                hair.set_taper_profile(
+                    c, root_scale=r, middle_scale=m, tip_scale=t)
+                return
+            # Absolute mode: write raw slider values as a 3-point
+            # ramp. This is the canonical way to "set" the taper
+            # from the 3 sliders; users who authored custom points
+            # via the ramp editor should edit there, not here.
+            r = existing[0] if root is None else float(root)
+            m = existing[1] if middle is None else float(middle)
+            t = existing[2] if tip is None else float(tip)
             hair.set_taper_profile(
                 c, root_scale=r, middle_scale=m, tip_scale=t)
         return setter
