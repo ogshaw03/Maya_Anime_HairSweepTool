@@ -951,8 +951,15 @@ def _create_tail_strands(
     # / group operations all "just work" on them).
     try:
         cmds.select(strand_curves, replace=True)
+        # Tail-tuned subdivisions (lower than the woven strand
+        # because tail curves are simple arcs, not helices) but
+        # still above the global default so the tail reads as
+        # smooth hair strands. Keep the default tip_scale so each
+        # tail strand still tapers to a hair-like point at its tip.
         hair.create_hair_from_selected_curves(
-            thickness=tail_thickness)
+            thickness=tail_thickness,
+            subdivisions_axis=C.DEFAULT_BRAID_TAIL_SUBDIV_AXIS,
+            subdivisions_length=C.DEFAULT_BRAID_TAIL_SUBDIV_LENGTH)
     except Exception as exc:
         cmds.warning(
             "[maya_hair_tool] tail strand の hair 化に失敗: "
@@ -1614,8 +1621,16 @@ def create_braid_from_spine(
         # nothing result rather than a lopsided half-braid.
         cmds.select(strand_curves, replace=True)
         try:
+            # Braid-tuned defaults so the first generation already
+            # reads as a smooth braid — the built-in hair defaults
+            # (axis=8, length=12, tip=0.05) produce a chain of
+            # angular blocks with tapered ends when applied to a
+            # 20+ turn helix.
             hair.create_hair_from_selected_curves(
                 thickness=strand_thickness,
+                subdivisions_axis=C.DEFAULT_BRAID_STRAND_SUBDIV_AXIS,
+                subdivisions_length=C.DEFAULT_BRAID_STRAND_SUBDIV_LENGTH,
+                tip_scale=C.DEFAULT_BRAID_STRAND_TIP_SCALE,
             )
         except Exception as exc:
             _cleanup_partial_braid(strand_curves)

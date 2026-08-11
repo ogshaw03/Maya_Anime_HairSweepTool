@@ -99,12 +99,17 @@ ORIGINAL_SHADING_GROUP_ATTR = "hairOriginalSG"  # legacy (v0.3.8/9)
 # Naming convention for auto-created braid groups (Braid_01, Braid_02, ...).
 BRAID_GROUP_PREFIX = "Braid_"
 
-# Braid defaults — chosen for a typical anime-length spine (~10 units).
-# ``turns_per_length`` is a rate (turns per unit of spine arc length),
-# so a longer spine gets proportionally more twists at the same setting.
+# Braid defaults — chosen so the FIRST GENERATION already looks like
+# a braid without any manual tweaking. Key ratio: strand_thickness
+# should be < half of braid_radius or the three woven strands touch
+# and read as one lump. Also: sweepMeshCreator's default
+# interpolationPrecision (12) is far too coarse for a helical curve
+# with 20+ turns — braid strands use a much higher length subdiv
+# (see BRAID_STRAND_SUBDIV_LENGTH) so the mesh follows the twist
+# smoothly instead of appearing as a chain of angular blocks.
 DEFAULT_BRAID_TURNS_PER_LENGTH = 0.5   # ~5 full turns over a 10-unit spine
-DEFAULT_BRAID_RADIUS = 0.5             # offset from spine to each strand centre
-DEFAULT_BRAID_STRAND_THICKNESS = 0.4   # per-strand mesh thickness
+DEFAULT_BRAID_RADIUS = 0.8             # offset from spine to each strand centre
+DEFAULT_BRAID_STRAND_THICKNESS = 0.3   # per-strand mesh thickness (~37% of radius)
 DEFAULT_BRAID_TIP_TAPER = 0.6          # 0=constant radius, 1=radius→0 at tip
 # Depth ratio — how deep the over/under crossings sit relative to the
 # braid's side-to-side width. Real hair braids are essentially flat
@@ -132,7 +137,28 @@ DEFAULT_BRAID_SAMPLES = 32             # helix smoothness; 32 covers most spines
 # forces a full recreate.
 DEFAULT_BRAID_TAIL_STRAND_COUNT = 6
 DEFAULT_BRAID_TAIL_SAMPLES = 12       # samples along each tail strand curve
-DEFAULT_BRAID_TAIL_THICKNESS = 0.3    # initial strand thickness
+DEFAULT_BRAID_TAIL_THICKNESS = 0.15   # initial strand thickness
+
+# sweepMeshCreator subdivisions used when the braid feeds curves
+# through hair.create_hair_from_selected_curves. Overriding the
+# global hair defaults (axis=8 / length=12) because those values
+# produce a visibly angular mesh for anything more than a straight
+# hair strand.
+#   BRAID_STRAND_SUBDIV_AXIS   — cross-section polygon sides
+#   BRAID_STRAND_SUBDIV_LENGTH — sweepMeshCreator.interpolationPrecision
+#                                (samples along the strand curve; 12 is
+#                                the built-in default and reads as a
+#                                chain of blocks on a helical curve).
+#   BRAID_STRAND_TIP_SCALE     — braid strand taper at the tie end
+#                                (1.0 = uniform thickness through the
+#                                woven section; the braid's overall
+#                                pinch is expressed via the offset
+#                                formula, not the sweep's taper ramp).
+DEFAULT_BRAID_STRAND_SUBDIV_AXIS = 12
+DEFAULT_BRAID_STRAND_SUBDIV_LENGTH = 80
+DEFAULT_BRAID_STRAND_TIP_SCALE = 1.0
+DEFAULT_BRAID_TAIL_SUBDIV_AXIS = 10
+DEFAULT_BRAID_TAIL_SUBDIV_LENGTH = 30
 # Nyquist / aliasing floor: fewer than this many samples PER FULL TURN and
 # the generated helix folds into a zig-zag instead of a smooth spiral.
 # 8 samples/turn keeps the curve visually smooth at any reasonable
