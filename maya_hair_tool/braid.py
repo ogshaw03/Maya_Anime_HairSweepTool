@@ -344,54 +344,43 @@ def _append_endpoint_at(points, positions, normals, binormals,
     ))
 
 
+# Tail CV template extracted from the hand-authored reference
+# ``ma/test001.ma`` (``braid_001_tail01_curve``). Each pair is
+# ``(t_along_tail, radial_offset_×braid_radius)``.
+#
+# CRUCIAL: the ``t`` values are NOT uniform. The reference author
+# placed CVs where they were needed to shape the silhouette — dense
+# just after the tie (0.204) to lock the puff peak, dense again
+# near the pinch (0.886..0.931), then a long stretch to the tip.
+# Sampling uniformly and returning these values at uniform t (what
+# v0.5.12–v0.5.14 did) produced a curve whose NURBS interpolation
+# looked "distorted" relative to the reference — the Y spacing of
+# the CVs was wrong even though the radial values matched.
+# ``_tail_strand_points`` now iterates this table directly so each
+# generated CV lands at the reference's exact spine parameter AND
+# at the reference's exact radial offset.
+_TAIL_TEMPLATE = (
+    (0.000, 0.210),   # tie-adjacent, pinched inside elastic
+    (0.204, 0.410),   # ▲ puff peak (compact — near the top)
+    (0.413, 0.310),
+    (0.459, 0.270),
+    (0.490, 0.250),   # ▽ shoulder — hair still visible full width
+    (0.552, 0.190),
+    (0.666, 0.120),
+    (0.809, 0.075),
+    (0.886, 0.041),
+    (0.911, 0.034),   # ▽ near-converged on spine
+    (0.931, 0.043),
+    (1.000, 0.114),   # ▲ tiny tip flare (wispy ends)
+)
+
+
 def _tail_shape(t: float) -> float:
-    """Radial-offset multiplier along the tail (t = 0 at the tie,
-    1 at the spine tip). Applied to each tail strand's radius so
-    the tail reads as a real hair tassel below an elastic band.
-
-    Knot table taken DIRECTLY from a hand-authored reference scene
-    (``ma/test001.ma``) — one knot per CV of the reference's
-    ``braid_001_tail01_curve``, normalised against that scene's
-    ``braid_radius = 0.5``. The v0.5.11 4-knot approximation
-    matched the peak but under-shot the middle and over-shot the
-    tail, producing a slender wispy silhouette instead of the
-    reference's compact teardrop.
-
-    Silhouette (12 knots, piecewise linear — 11 segments):
-
-        i    t         shape    section
-        ─    ─────     ─────    ─────────────
-        0    0.000     0.21     pinch (inside elastic)
-        1    0.091     0.41     ▲ puff peak (early spike)
-        2    0.182     0.31     rapid drop after peak
-        3    0.273     0.27
-        4    0.364     0.25     ▽ shoulder — hair still full here
-        5    0.455     0.19
-        6    0.545     0.12
-        7    0.636     0.075    ─ tapering fast
-        8    0.727     0.041
-        9    0.818     0.034    ▽ narrow — near-converged on spine
-        10   0.909     0.043
-        11   1.000     0.114    ▲ tiny tip flare (wispy ends)
-
-    Uses whole-table lookup rather than analytical knots so the
-    shape stays identical to the reference at every sample when
-    ``num_samples`` matches (default 12).
-    """
-    knots = (
-        (0.000, 0.210),
-        (0.091, 0.410),
-        (0.182, 0.310),
-        (0.273, 0.270),
-        (0.364, 0.250),
-        (0.455, 0.190),
-        (0.545, 0.120),
-        (0.636, 0.075),
-        (0.727, 0.041),
-        (0.818, 0.034),
-        (0.909, 0.043),
-        (1.000, 0.114),
-    )
+    """Backwards-compatible interpolator over ``_TAIL_TEMPLATE`` —
+    kept for any caller that still asks for the shape at an
+    arbitrary t. Fresh strand generation and rebuild both iterate
+    the template directly (see ``_tail_strand_points``)."""
+    knots = _TAIL_TEMPLATE
     if t <= knots[0][0]:
         return knots[0][1]
     if t >= knots[-1][0]:
@@ -930,28 +919,28 @@ def _tail_strand_points(
     phase: float,
     tail_length: float,
     braid_radius: float,
-    num_samples: int,
+    num_samples: int = 0,
 ) -> List[Vec3]:
-    """Compute world-space points for one tail strand curve. The
-    strand starts at the tie point on the spine, spirals slightly
-    (angular ``phase``), and follows the pinch → bulge → tip shape
-    down to the spine tip. Independent of the woven-braid formula
-    — tail strands don't cross each other, they just splay out."""
+    """Compute world-space points for one tail strand curve.
+
+    Iterates ``_TAIL_TEMPLATE`` directly so each CV lands at the
+    reference's exact (spine parameter, radial offset). ``num_samples``
+    is retained in the signature for callers that used to pass it
+    but is ignored — the CV count is fixed at ``len(_TAIL_TEMPLATE)``
+    so the resulting NURBS matches the reference exactly.
+    """
     tie_off = 1.0 - max(0.0, min(0.99, tail_length))
     if tie_off >= 1.0:
         return []
-    # Sample spine specifically across the tail region for tighter
-    # control (we don't need to reuse the braid's sample array).
     mn, mx = _spine_param_range(spine_curve)
     span = mx - mn
     points: List[Vec3] = []
-    for j in range(num_samples):
-        t = float(j) / float(num_samples - 1)  # 0..1 across tail
+    for t, r_shape in _TAIL_TEMPLATE:
         u = tie_off + t * (1.0 - tie_off)
         param = mn + span * u
         p = cmds.pointOnCurve(spine_curve, parameter=param,
                               position=True)
-        # Local frame at u — use small finite difference for tangent.
+        # Local frame at u — small finite-difference tangent.
         d = max(1e-6, span * 1e-3)
         p0 = cmds.pointOnCurve(
             spine_curve, parameter=max(mn, param - d),
@@ -968,8 +957,6 @@ def _tail_strand_points(
         if _length(N) < 1e-6:
             N = _normalize(_cross((1.0, 0.0, 0.0), T))
         B = _normalize(_cross(T, N))
-        # Pinch → bulge → tip radius envelope.
-        r_shape = _tail_shape(t)
         r = braid_radius * r_shape
         offset_w = r * math.cos(phase)
         offset_d = r * math.sin(phase)
