@@ -118,12 +118,12 @@ DEFAULT_BRAID_TIP_TAPER = 0.6          # 0=constant radius, 1=radius→0 at tip
 DEFAULT_BRAID_DEPTH_RATIO = 0.4
 # Tail: fraction of the spine (from the tip end) reserved for the
 # "un-braided" tail where the strands come out of the tie and hang
-# as a ponytail-like tassel. 0 = braid runs all the way to the
-# spine tip, 0.5 = the bottom half is tail. 0.20 matches the
-# proportions of the user's hand-authored reference scene
-# (ma/test001.ma) — a longer tail stretches the puff silhouette
-# into a wispy elongated shape rather than the compact teardrop.
-DEFAULT_BRAID_TAIL_LENGTH = 0.20
+# as a ponytail-like tassel. Matches ma/test001.ma exactly (0.176)
+# so first-generation output looks proportional to the reference
+# silhouette. Higher values stretch the same shape multipliers
+# over a longer Y range and read as a wispy elongated tail
+# instead of a compact teardrop.
+DEFAULT_BRAID_TAIL_LENGTH = 0.176
 # Per-region density multipliers for the weave. 1.0 = uniform along
 # the spine. Higher values in one region = more crossings there
 # (tighter weave); lower = looser. Interpolated as a piecewise-
@@ -140,7 +140,7 @@ DEFAULT_BRAID_SAMPLES = 32             # helix smoothness; 32 covers most spines
 # forces a full recreate.
 DEFAULT_BRAID_TAIL_STRAND_COUNT = 6
 DEFAULT_BRAID_TAIL_SAMPLES = 12       # samples along each tail strand curve
-DEFAULT_BRAID_TAIL_THICKNESS = 0.15   # initial strand thickness
+DEFAULT_BRAID_TAIL_THICKNESS = 0.132  # initial strand thickness (matches ma/test001.ma)
 # Tail tip taper — writes to each tail sweepMeshCreator's
 # ``taperCurve`` tip value (root and middle stay at 1.0). 0.0 =
 # strand comes to a needle point at the tip, 1.0 = uniform
