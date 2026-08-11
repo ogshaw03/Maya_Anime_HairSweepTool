@@ -413,9 +413,18 @@ def _build_strand_curve(
             phase_base, turns, radius, tip_taper, depth_ratio,
             density_top, density_middle, density_bottom)
 
+    # Guard against tail_length so large that the braid region
+    # produces fewer than 2 points — cmds.curve needs at least
+    # ``degree+1`` points, and a 0- or 1-point call raises. Empty
+    # returns are handled by the caller (falls back to skipping
+    # this strand rather than crashing the whole braid).
+    if len(points) < 2:
+        return None
     # Cubic BSpline through the samples. If we ever hit < 4 points
-    # ``degree=3`` is illegal; fall back to linear.
-    degree = 3 if n >= 4 else 1
+    # ``degree=3`` is illegal; fall back to linear. Use ``len(points)``
+    # not ``n`` — n counts input spine samples, points can be fewer
+    # once the ``u > tie_off`` break trims the trailing samples.
+    degree = 3 if len(points) >= 4 else 1
     return cmds.curve(name=name, p=points, degree=degree)
 
 
@@ -963,13 +972,26 @@ def _create_tail_strands(
 
     # Reparent tail meshes under the Braid geom group so the tail
     # moves with the braid and appears together in the outliner.
+    # ALSO move each mesh's guide curve into the matching Curve_group
+    # container so the split-hierarchy pairing (Geometry_group /
+    # Curve_group same-name mirror) that ``hair.move_strand_to_group``
+    # normally enforces is preserved for tail strands too — otherwise
+    # the tail curves get stranded in Curve_group root while their
+    # meshes sit under Braid_NN, breaking the outliner grouping.
+    parent_short = ""
+    if parent_group:
+        parent_short = parent_group.split("|")[-1]
     if parent_group and cmds.objExists(parent_group):
         moved: List[str] = []
         for m in tail_meshes:
             try:
-                r = cmds.parent(m, parent_group) or []
-                moved.append(r[0] if r else m)
-            except RuntimeError:
+                if parent_short:
+                    moved.append(hair.move_strand_to_group(
+                        m, parent_short))
+                else:
+                    r = cmds.parent(m, parent_group) or []
+                    moved.append(r[0] if r else m)
+            except Exception:
                 moved.append(m)
         tail_meshes = moved
 
@@ -1011,13 +1033,17 @@ def _update_tail_strands_in_place(
     spine_curve: str,
     tail_length: float,
     braid_radius: float,
+    tail_thickness: float,
     tail_mesh_uuids: List[str],
 ) -> bool:
     """When the tail strand COUNT hasn't changed, update each tail
     strand's guide curve CVs in-place so per-strand hair tweaks
-    (thickness, taper, colour) survive the rebuild. Returns True
-    on success, False when any UUID couldn't be resolved (caller
-    should then fall back to full delete + recreate)."""
+    (thickness override, taper, colour) survive the rebuild.
+    Also propagates ``tail_thickness`` to each strand's
+    sweepMeshCreator (matches braid-side thickness propagation in
+    ``rebuild_braid``). Returns True on success, False when any
+    UUID couldn't be resolved (caller should then fall back to full
+    delete + recreate)."""
     tail_samples = max(4, int(C.DEFAULT_BRAID_TAIL_SAMPLES))
     count = len(tail_mesh_uuids)
     if count < 1:
@@ -1033,6 +1059,22 @@ def _update_tail_strands_in_place(
         if len(pts) < 2:
             return False
         _replace_curve_cvs(curve, pts)
+    # Propagate the tail-thickness slider value to every tail
+    # sweepMeshCreator so the "尾ストランドの初期太さ" slider still
+    # takes effect during in-place rebuild — the in-place path used
+    # to skip this and the value only landed on full recreate.
+    for uid in tail_mesh_uuids:
+        matches = cmds.ls(uid) or []
+        if not matches:
+            continue
+        creators = su.sweep_creators_from_nodes(
+            [matches[0]]) or []
+        for c in creators:
+            try:
+                cmds.setAttr(c + ".scaleProfileUniform", True)
+                cmds.setAttr(c + ".scaleProfileX", tail_thickness)
+            except Exception:
+                pass
     return True
 
 
@@ -1214,6 +1256,14 @@ def rebuild_braid(group: str, **overrides) -> None:
             "{0}".format(params["spine_uuid"]))
     spine_curve = spine_matches[0]
 
+    # Purge any legacy v0.4.8 parentConstraints on this Braid group.
+    # v0.4.9 switched to a scriptJob-driven rebuild that writes strand
+    # CVs in WORLD space — a live parentConstraint on the group would
+    # re-interpret those world coords in the constrained parent's
+    # local space, giving a visible double-transform. Idempotent when
+    # no constraint is present.
+    _remove_existing_braid_constraints(group)
+
     curves = _find_strand_curves_for_rebuild(
         params["strand_mesh_uuids"])
     live_curves = [c for c in curves if c and cmds.objExists(c)]
@@ -1253,9 +1303,15 @@ def rebuild_braid(group: str, **overrides) -> None:
             continue
         phase = 2.0 * math.pi * (float(idx) / 3.0)
         n = len(positions)
+        # v0.5.0: braid strand only covers 0..tie_off; the tail is
+        # a separate set of hair strands. Match _build_strand_curve's
+        # loop so rebuild produces the same shape as fresh creation.
+        tie_off = 1.0 - max(0.0, min(0.99, params["tail_length"]))
         points: List[Vec3] = []
         for j in range(n):
             u = float(j) / float(n - 1)
+            if u > tie_off:
+                break
             w, d = _strand_offset_at(
                 u,
                 phase,
@@ -1266,7 +1322,6 @@ def rebuild_braid(group: str, **overrides) -> None:
                 params["density_top"],
                 params["density_middle"],
                 params["density_bottom"],
-                params["tail_length"],
             )
             N = normals[j]
             B = binormals[j]
@@ -1275,6 +1330,20 @@ def rebuild_braid(group: str, **overrides) -> None:
                 positions[j][1] + w * N[1] + d * B[1],
                 positions[j][2] + w * N[2] + d * B[2],
             ))
+        # Snap the endpoint exactly to tie_off when the tie falls
+        # between samples — matches fresh-creation behaviour.
+        if points and tie_off > 0.0 and tie_off < 1.0:
+            _append_endpoint_at(
+                points, positions, normals, binormals, tie_off,
+                phase, total_turns, params["radius"],
+                params["tip_taper"], params["depth_ratio"],
+                params["density_top"], params["density_middle"],
+                params["density_bottom"])
+        if len(points) < 2:
+            # Degenerate tail_length ≈ 1.0 leaves the braid with
+            # nothing to draw; skip this strand rather than fail
+            # the whole rebuild.
+            continue
         _replace_curve_cvs(curve, points)
 
     # Propagate strand_thickness to each mesh's sweepMeshCreator.
@@ -1317,7 +1386,14 @@ def rebuild_braid(group: str, **overrides) -> None:
             and params["tail_length"] > 1e-4):
         tail_updated_in_place = _update_tail_strands_in_place(
             group, spine_curve, params["tail_length"],
-            params["radius"], existing_tail_uuids)
+            params["radius"], tail_thickness, existing_tail_uuids)
+        if tail_updated_in_place:
+            # In-place path skips _stamp_tail_meta by design (UUIDs
+            # unchanged) — but ``tail_thickness`` may have changed
+            # and must be persisted for the next selection-sync.
+            _stamp_tail_meta(
+                group, existing_tail_uuids, desired_count,
+                tail_thickness)
     if not tail_updated_in_place:
         _delete_existing_tail_strands(group)
         new_tail_meshes = _create_tail_strands(
@@ -1505,7 +1581,7 @@ def create_braid_from_spine(
         for i in range(3):
             phase = 2.0 * math.pi * (float(i) / 3.0)
             cname = "{0}_s{1}_curve".format(base_name, i + 1)
-            strand_curves.append(_build_strand_curve(
+            built = _build_strand_curve(
                 positions, normals, binormals,
                 phase_base=phase,
                 turns=total_turns,
@@ -1517,7 +1593,16 @@ def create_braid_from_spine(
                 density_bottom=density_bottom,
                 tail_length=tail_length,
                 name=cname,
-            ))
+            )
+            if not built:
+                # Degenerate config produced fewer than 2 CVs.
+                # Roll back anything already built and bail out.
+                _cleanup_partial_braid(strand_curves)
+                raise RuntimeError(
+                    "三つ編みのカーブを作成できません — "
+                    "tail_length が大きすぎる可能性があります "
+                    "(braid 部分が短すぎて 2 点未満)。")
+            strand_curves.append(built)
 
         # Feed the three strand curves through the standard hair
         # pipeline. Select-then-call keeps this decoupled from any
