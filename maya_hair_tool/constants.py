@@ -106,6 +106,11 @@ DEFAULT_BRAID_TURNS_PER_LENGTH = 0.5   # ~5 full turns over a 10-unit spine
 DEFAULT_BRAID_RADIUS = 0.5             # offset from spine to each strand centre
 DEFAULT_BRAID_STRAND_THICKNESS = 0.4   # per-strand mesh thickness
 DEFAULT_BRAID_TIP_TAPER = 0.6          # 0=constant radius, 1=radius→0 at tip
+# Depth ratio — how deep the over/under crossings sit relative to the
+# braid's side-to-side width. Real hair braids are essentially flat
+# with a shallow depth (0.3-0.5). 1.0 makes depth and width equal
+# (chunky rope-looking braid); 0 collapses to a flat 2D zig-zag.
+DEFAULT_BRAID_DEPTH_RATIO = 0.4
 DEFAULT_BRAID_SAMPLES = 32             # helix smoothness; 32 covers most spines
 # Nyquist / aliasing floor: fewer than this many samples PER FULL TURN and
 # the generated helix folds into a zig-zag instead of a smooth spiral.

@@ -217,25 +217,48 @@ def _build_strand_curve(
     turns: float,
     radius: float,
     tip_taper: float,
+    depth_ratio: float,
     name: str,
 ) -> str:
-    """Offset each spine sample radially by (r*cosθ * N + r*sinθ * B)
-    with θ = phase_base + 2π*turns*u, then build a cubic NURBS curve
-    through the offset points."""
+    """Build a cubic NURBS curve for one strand of a flat 3-strand braid.
+
+    A real hair braid is essentially planar with a shallow depth for
+    the over/under crossings — not a rotating helix. Formula:
+
+        θ_i(u) = phase_base + 2π · turns · u
+        width  = R * sin(θ_i)          # N direction, 1× frequency
+        depth  = R * depth_ratio * sin(2 · θ_i)  # B direction, 2× freq
+
+    The three strands (phase_base = 0, 2π/3, 4π/3) oscillate as
+    three sine waves in the N (width) axis with 120° phase offsets;
+    they visibly cross each other because the sine values coincide
+    at fixed points. The B (depth) axis oscillates at DOUBLE the
+    width frequency so each strand traces a figure-8 in the (N, B)
+    plane — the two lobes of the figure-8 are the "over" and
+    "under" halves of the crossings, and offsetting three of them
+    by 120° gives the braid's alternating over-under pattern.
+
+    ``depth_ratio`` controls how thick (front-to-back) the braid
+    reads; 0 collapses it to a flat 2D zig-zag, 1 makes depth and
+    width equal (chunky braid). ``tip_taper`` shrinks both axes
+    together so the braid tapers to a point at the tip.
+    """
     n = len(positions)
     points: List[Vec3] = []
     for i in range(n):
         u = float(i) / float(n - 1)
         theta = phase_base + 2.0 * math.pi * turns * u
-        eff_radius = radius * max(0.0, 1.0 - tip_taper * u)
-        cos_t = math.cos(theta)
-        sin_t = math.sin(theta)
+        taper = max(0.0, 1.0 - tip_taper * u)
+        # Side-to-side wave in the braid's flat plane.
+        w = radius * math.sin(theta) * taper
+        # Over/under wave — figure-8 second harmonic.
+        d = radius * depth_ratio * math.sin(2.0 * theta) * taper
         N = normals[i]
         B = binormals[i]
         offset = (
-            eff_radius * (cos_t * N[0] + sin_t * B[0]),
-            eff_radius * (cos_t * N[1] + sin_t * B[1]),
-            eff_radius * (cos_t * N[2] + sin_t * B[2]),
+            w * N[0] + d * B[0],
+            w * N[1] + d * B[1],
+            w * N[2] + d * B[2],
         )
         points.append(_add(positions[i], offset))
 
@@ -318,6 +341,7 @@ def create_braid_from_spine(
     radius: float = C.DEFAULT_BRAID_RADIUS,
     strand_thickness: float = C.DEFAULT_BRAID_STRAND_THICKNESS,
     tip_taper: float = C.DEFAULT_BRAID_TIP_TAPER,
+    depth_ratio: float = C.DEFAULT_BRAID_DEPTH_RATIO,
     num_samples: int = C.DEFAULT_BRAID_SAMPLES,
     group: bool = True,
 ) -> List[str]:
@@ -425,6 +449,7 @@ def create_braid_from_spine(
                 turns=total_turns,
                 radius=radius,
                 tip_taper=tip_taper,
+                depth_ratio=depth_ratio,
                 name=cname,
             ))
 
