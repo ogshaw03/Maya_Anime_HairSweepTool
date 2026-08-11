@@ -117,10 +117,11 @@ DEFAULT_BRAID_TIP_TAPER = 0.6          # 0=constant radius, 1=radius→0 at tip
 # (chunky rope-looking braid); 0 collapses to a flat 2D zig-zag.
 DEFAULT_BRAID_DEPTH_RATIO = 0.4
 # Tail: fraction of the spine (from the tip end) reserved for the
-# "un-braided" tail where the 3 strands come out of the tie and
-# taper to individual points. 0 = braid runs all the way to the
-# spine tip, 0.5 = the bottom half is tail.
-DEFAULT_BRAID_TAIL_LENGTH = 0.15
+# "un-braided" tail where the strands come out of the tie and hang
+# as a ponytail-like tassel. 0 = braid runs all the way to the
+# spine tip, 0.5 = the bottom half is tail. 0.30 gives roughly the
+# 60/40 braid/tail split shown in typical hair-braid illustrations.
+DEFAULT_BRAID_TAIL_LENGTH = 0.30
 # Per-region density multipliers for the weave. 1.0 = uniform along
 # the spine. Higher values in one region = more crossings there
 # (tighter weave); lower = looser. Interpolated as a piecewise-
@@ -175,8 +176,15 @@ DEFAULT_BRAID_TAIL_SUBDIV_LENGTH = 30
 # result — that's an acceptable trade for a first-generation mesh
 # that already reads as smooth without any manual tuning.
 _INTERP_MODE_DISTANCE = 3
+_INTERP_MODE_START_TO_END = 1
 DEFAULT_BRAID_STRAND_INTERP_DISTANCE = 0.08   # dense (helix follows twist)
-DEFAULT_BRAID_TAIL_INTERP_DISTANCE = 0.15     # tails are simpler arcs
+# Tail strands use Start-to-End mode with a fixed step count
+# instead of a per-unit distance — tail curves are short (typically
+# < 1 unit), so a distance-based sampler drops to only a handful
+# of cross-sections and each strand renders as a chunky block.
+# Fixed 30 steps guarantees the mesh reads as a smooth hair strand
+# regardless of the tail's absolute length.
+DEFAULT_BRAID_TAIL_INTERP_STEPS = 30
 # Nyquist / aliasing floor: fewer than this many samples PER FULL TURN and
 # the generated helix folds into a zig-zag instead of a smooth spiral.
 # 8 samples/turn keeps the curve visually smooth at any reasonable

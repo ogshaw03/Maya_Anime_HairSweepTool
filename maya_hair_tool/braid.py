@@ -350,7 +350,7 @@ def _tail_shape(t: float) -> float:
     """
     tie_continuity = 1.0
     pinch = 0.35
-    tip_spread = 0.55
+    tip_spread = 0.40
     pinch_end = 0.15
     if t <= 0.0:
         return tie_continuity
@@ -991,10 +991,11 @@ def _create_tail_strands(
         m for m in (cmds.ls(selection=True, long=True) or [])
         if hair._is_hair_strand_transform(m)
     ]
-    # Same Distance-mode override for tail strands so they don't
-    # inherit the dead-zone Precision default either.
-    _apply_distance_interpolation(
-        tail_meshes, C.DEFAULT_BRAID_TAIL_INTERP_DISTANCE)
+    # Start-to-End mode with fixed steps — see helper docstring
+    # for why tail strands don't use the Distance mode the woven
+    # braid strands use.
+    _apply_start_to_end_interpolation(
+        tail_meshes, C.DEFAULT_BRAID_TAIL_INTERP_STEPS)
 
     # Reparent tail meshes under the Braid geom group so the tail
     # moves with the braid and appears together in the outliner.
@@ -1111,12 +1112,12 @@ def _apply_distance_interpolation(
     """Force each strand mesh's sweepMeshCreator into Distance-mode
     interpolation with the given spacing along the curve. Bypasses
     the Precision-mode dead zone (values 1..74 all resolve to the
-    same coarse mesh) so the braid renders as a smooth helix from
-    the first click without any manual slider tuning.
+    same coarse mesh) so long helical curves render as smooth
+    spirals from the first click without any manual slider tuning.
 
-    Safe on any strand type; used by both the woven braid strands
-    and the free tail strands. No-op when the mesh has no
-    sweepMeshCreator in history (defensive)."""
+    Best for the woven braid strands (long, high curvature —
+    density needs to scale with length). Not appropriate for short
+    tail strands (see ``_apply_start_to_end_interpolation``)."""
     if not mesh_transforms:
         return
     for m in mesh_transforms:
@@ -1136,6 +1137,38 @@ def _apply_distance_interpolation(
                     cmds.setAttr(
                         c + ".interpolationDistance",
                         float(distance))
+            except Exception:
+                pass
+
+
+def _apply_start_to_end_interpolation(
+    mesh_transforms: List[str],
+    steps: int,
+) -> None:
+    """Force each strand mesh's sweepMeshCreator into Start-to-End
+    mode with a fixed step count. Used for tail strands: tails are
+    short (typically < 1 unit) so a Distance-mode sampler would put
+    only a handful of cross-sections on each strand and make them
+    look like chunky spikes; a fixed step count guarantees enough
+    density regardless of the tail's absolute length."""
+    if not mesh_transforms:
+        return
+    for m in mesh_transforms:
+        if not cmds.objExists(m):
+            continue
+        creators = su.sweep_creators_from_nodes([m]) or []
+        for c in creators:
+            try:
+                if cmds.attributeQuery(
+                        "interpolationMode", node=c, exists=True):
+                    cmds.setAttr(
+                        c + ".interpolationMode",
+                        C._INTERP_MODE_START_TO_END)
+                if cmds.attributeQuery(
+                        "interpolationSteps", node=c,
+                        exists=True):
+                    cmds.setAttr(
+                        c + ".interpolationSteps", int(steps))
             except Exception:
                 pass
 
