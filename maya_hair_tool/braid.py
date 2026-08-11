@@ -347,35 +347,38 @@ def _append_endpoint_at(points, positions, normals, binormals,
 def _tail_shape(t: float) -> float:
     """Radial-offset multiplier along the tail (t = 0 at the tie,
     1 at the spine tip). Applied to each tail strand's radius so
-    the tail hangs down as a ponytail-like tassel.
+    the tail reads as a real hair tassel below an elastic band.
 
-    Silhouette knots (matched to a real elastic-tied braid):
+    Silhouette knots (matched to a real elastic-tied braid — the
+    band squeezes the hair down, and just below it the freed
+    strands relax and puff back out to a natural width before
+    hanging down and tapering to tips):
 
-    * t = 0.0 → ``pinch``      (strands emerge from the tie already
-                                 compressed by the elastic — they
-                                 do NOT start at the braid's outer
-                                 radius; the earlier "continuity"
-                                 knot at 1.0 made the tail start
-                                 wide and then converge, which read
-                                 as an upside-down cone instead of
-                                 hair-out-of-elastic)
-    * t = 1.0 → ``tip_spread``  (very slight outward drift at the
-                                 tips; the per-strand tip_scale
-                                 handles the individual "point"
-                                 silhouette)
+    * t = 0.0  → ``pinch``       (compressed inside the elastic)
+    * t = 0.15 → ``puff``        (relaxes just below the elastic —
+                                   the hair "poofs" back out here,
+                                   which is the characteristic
+                                   silhouette right under a tie)
+    * t = 1.0  → ``tip_spread``  (hangs down, slight outward drift;
+                                   individual strand tip_scale
+                                   handles the pointy hair-tip)
 
-    Linear interpolation between the two — simplest shape that
-    reads correctly, and there's a torus (the hair tie) sitting
-    right at the boundary which visually covers any tiny gap
-    between the braid strand endpoints and the tail strand roots.
+    Two piecewise segments. All values stay < 1.0 so the tail never
+    exceeds the braid radius (which would look like a mushroom).
     """
     pinch = 0.20
+    puff = 0.40
     tip_spread = 0.25
+    puff_at = 0.15
     if t <= 0.0:
         return pinch
     if t >= 1.0:
         return tip_spread
-    return pinch + (tip_spread - pinch) * t
+    if t <= puff_at:
+        u = t / puff_at
+        return pinch + (puff - pinch) * u
+    u = (t - puff_at) / (1.0 - puff_at)
+    return puff + (tip_spread - puff) * u
 
 
 def _build_strand_curve(
@@ -735,10 +738,16 @@ def _create_hair_tie(
         return None
     tie_off = max(0.0, min(0.99, 1.0 - tail_length))
     pos, T, N, B = _sample_spine_frame_at(spine_curve, tie_off)
-    # Snug around the pinched strands: their max radial offset at
-    # pinch ≈ braid_radius × TAIL_PINCH; tie sits just outside that.
-    tie_major_r = float(braid_radius) * 0.30
-    tie_section_r = float(braid_radius) * 0.06
+    # Torus dimensions — sized so the elastic wraps snugly around
+    # the PINCHED hair at the tie point (where the braid squeeze
+    # + tail pinch both bring the strand centres down to ~0.20 ×
+    # braid_radius, plus strand thickness on either side).
+    #
+    # Previous values (0.30 / 0.06) rendered a tiny ring that
+    # barely showed up next to the braid — the user asked for a
+    # larger, more prominent tie.
+    tie_major_r = float(braid_radius) * 0.65
+    tie_section_r = float(braid_radius) * 0.12
     torus = cmds.polyTorus(
         radius=tie_major_r,
         sectionRadius=tie_section_r,
