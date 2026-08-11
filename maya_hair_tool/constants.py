@@ -159,6 +159,24 @@ DEFAULT_BRAID_STRAND_SUBDIV_LENGTH = 80
 DEFAULT_BRAID_STRAND_TIP_SCALE = 1.0
 DEFAULT_BRAID_TAIL_SUBDIV_AXIS = 10
 DEFAULT_BRAID_TAIL_SUBDIV_LENGTH = 30
+
+# sweepMeshCreator interpolation ── mode override for braid meshes.
+# The default mode 0 (Precision) uses ``interpolationPrecision`` as
+# an adaptive quality threshold: values 1..74 all resolve to the
+# same coarse mesh, and only >= 75 does the sampler actually add
+# subdivisions. That dead zone makes the "長さ分割数" slider feel
+# broken on helical curves.
+#
+# Switching braid meshes to mode 3 (Distance) uses
+# ``interpolationDistance`` as a literal spacing along the curve —
+# one cross-section every X units. Predictable and dense regardless
+# of curvature. The "長さ分割数" slider (which writes to
+# interpolationPrecision) becomes a no-op on braid strands as a
+# result — that's an acceptable trade for a first-generation mesh
+# that already reads as smooth without any manual tuning.
+_INTERP_MODE_DISTANCE = 3
+DEFAULT_BRAID_STRAND_INTERP_DISTANCE = 0.08   # dense (helix follows twist)
+DEFAULT_BRAID_TAIL_INTERP_DISTANCE = 0.15     # tails are simpler arcs
 # Nyquist / aliasing floor: fewer than this many samples PER FULL TURN and
 # the generated helix folds into a zig-zag instead of a smooth spiral.
 # 8 samples/turn keeps the curve visually smooth at any reasonable

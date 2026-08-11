@@ -976,6 +976,10 @@ def _create_tail_strands(
         m for m in (cmds.ls(selection=True, long=True) or [])
         if hair._is_hair_strand_transform(m)
     ]
+    # Same Distance-mode override for tail strands so they don't
+    # inherit the dead-zone Precision default either.
+    _apply_distance_interpolation(
+        tail_meshes, C.DEFAULT_BRAID_TAIL_INTERP_DISTANCE)
 
     # Reparent tail meshes under the Braid geom group so the tail
     # moves with the braid and appears together in the outliner.
@@ -1083,6 +1087,42 @@ def _update_tail_strands_in_place(
             except Exception:
                 pass
     return True
+
+
+def _apply_distance_interpolation(
+    mesh_transforms: List[str],
+    distance: float,
+) -> None:
+    """Force each strand mesh's sweepMeshCreator into Distance-mode
+    interpolation with the given spacing along the curve. Bypasses
+    the Precision-mode dead zone (values 1..74 all resolve to the
+    same coarse mesh) so the braid renders as a smooth helix from
+    the first click without any manual slider tuning.
+
+    Safe on any strand type; used by both the woven braid strands
+    and the free tail strands. No-op when the mesh has no
+    sweepMeshCreator in history (defensive)."""
+    if not mesh_transforms:
+        return
+    for m in mesh_transforms:
+        if not cmds.objExists(m):
+            continue
+        creators = su.sweep_creators_from_nodes([m]) or []
+        for c in creators:
+            try:
+                if cmds.attributeQuery(
+                        "interpolationMode", node=c, exists=True):
+                    cmds.setAttr(
+                        c + ".interpolationMode",
+                        C._INTERP_MODE_DISTANCE)
+                if cmds.attributeQuery(
+                        "interpolationDistance", node=c,
+                        exists=True):
+                    cmds.setAttr(
+                        c + ".interpolationDistance",
+                        float(distance))
+            except Exception:
+                pass
 
 
 def _resolve_spine_transform(spine_curve: str) -> Optional[str]:
@@ -1641,6 +1681,13 @@ def create_braid_from_spine(
         # ``create_hair_from_selected_curves`` selects the resulting
         # mesh transforms — grab those now.
         strand_meshes = cmds.ls(selection=True, long=True) or []
+        # Push each strand's sweepMeshCreator into Distance-mode
+        # interpolation so the helical mesh is dense from the start
+        # (see constants.py — Precision mode has a dead zone that
+        # makes the sliders feel broken on twisted curves).
+        _apply_distance_interpolation(
+            strand_meshes,
+            C.DEFAULT_BRAID_STRAND_INTERP_DISTANCE)
         # Filter to strand-mesh transforms (defensive — should be
         # exactly 3).
         strand_meshes = [
