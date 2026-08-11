@@ -967,6 +967,26 @@ class HairBuilderUI(object):
             C.DEFAULT_BRAID_TIP_TAPER, 0.0, 1.0,
             drag_cb=self._cb_braid_tip_taper_drag,
             change_cb=self._cb_braid_tip_taper_change)
+        self.braid_tail_length = _slider_with_reset(
+            braid_col, "尾の長さ (Tail Length 0-0.5)",
+            C.DEFAULT_BRAID_TAIL_LENGTH, 0.0, 0.5,
+            drag_cb=self._cb_braid_tail_drag,
+            change_cb=self._cb_braid_tail_change)
+        self.braid_density_top = _slider_with_reset(
+            braid_col, "上部密度 (Top Density)",
+            C.DEFAULT_BRAID_DENSITY_TOP, 0.1, 3.0,
+            drag_cb=self._cb_braid_density_top_drag,
+            change_cb=self._cb_braid_density_top_change)
+        self.braid_density_middle = _slider_with_reset(
+            braid_col, "中部密度 (Middle Density)",
+            C.DEFAULT_BRAID_DENSITY_MIDDLE, 0.1, 3.0,
+            drag_cb=self._cb_braid_density_middle_drag,
+            change_cb=self._cb_braid_density_middle_change)
+        self.braid_density_bottom = _slider_with_reset(
+            braid_col, "下部密度 (Bottom Density)",
+            C.DEFAULT_BRAID_DENSITY_BOTTOM, 0.1, 3.0,
+            drag_cb=self._cb_braid_density_bottom_drag,
+            change_cb=self._cb_braid_density_bottom_change)
         cmds.button(
             label="▶ 三つ編みを作成",
             height=32,
@@ -1455,6 +1475,10 @@ class HairBuilderUI(object):
                 radius=_read_float(self.braid_radius),
                 strand_thickness=_read_float(self.braid_thickness),
                 tip_taper=_read_float(self.braid_tip_taper),
+                tail_length=_read_float(self.braid_tail_length),
+                density_top=_read_float(self.braid_density_top),
+                density_middle=_read_float(self.braid_density_middle),
+                density_bottom=_read_float(self.braid_density_bottom),
             )
         except Exception as exc:
             cmds.warning("[maya_hair_tool] 三つ編み生成失敗: {0}".format(exc))
@@ -1531,6 +1555,30 @@ class HairBuilderUI(object):
     def _cb_braid_tip_taper_change(self, value):
         self._braid_live_apply("tip_taper", value, True)
 
+    def _cb_braid_tail_drag(self, value):
+        self._braid_live_apply("tail_length", value, False)
+
+    def _cb_braid_tail_change(self, value):
+        self._braid_live_apply("tail_length", value, True)
+
+    def _cb_braid_density_top_drag(self, value):
+        self._braid_live_apply("density_top", value, False)
+
+    def _cb_braid_density_top_change(self, value):
+        self._braid_live_apply("density_top", value, True)
+
+    def _cb_braid_density_middle_drag(self, value):
+        self._braid_live_apply("density_middle", value, False)
+
+    def _cb_braid_density_middle_change(self, value):
+        self._braid_live_apply("density_middle", value, True)
+
+    def _cb_braid_density_bottom_drag(self, value):
+        self._braid_live_apply("density_bottom", value, False)
+
+    def _cb_braid_density_bottom_change(self, value):
+        self._braid_live_apply("density_bottom", value, True)
+
     def _sync_braid_sliders_from_selection(self):
         """Populate the 4 braid sliders with the stored values of
         the currently-selected Braid group. Called from the
@@ -1558,6 +1606,18 @@ class HairBuilderUI(object):
             cmds.floatSliderGrp(
                 self.braid_tip_taper, edit=True,
                 value=params["tip_taper"])
+            cmds.floatSliderGrp(
+                self.braid_tail_length, edit=True,
+                value=params["tail_length"])
+            cmds.floatSliderGrp(
+                self.braid_density_top, edit=True,
+                value=params["density_top"])
+            cmds.floatSliderGrp(
+                self.braid_density_middle, edit=True,
+                value=params["density_middle"])
+            cmds.floatSliderGrp(
+                self.braid_density_bottom, edit=True,
+                value=params["density_bottom"])
         except Exception:
             pass
         finally:

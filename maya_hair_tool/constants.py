@@ -111,6 +111,18 @@ DEFAULT_BRAID_TIP_TAPER = 0.6          # 0=constant radius, 1=radius→0 at tip
 # with a shallow depth (0.3-0.5). 1.0 makes depth and width equal
 # (chunky rope-looking braid); 0 collapses to a flat 2D zig-zag.
 DEFAULT_BRAID_DEPTH_RATIO = 0.4
+# Tail: fraction of the spine (from the tip end) reserved for the
+# "un-braided" tail where the 3 strands come out of the tie and
+# taper to individual points. 0 = braid runs all the way to the
+# spine tip, 0.5 = the bottom half is tail.
+DEFAULT_BRAID_TAIL_LENGTH = 0.15
+# Per-region density multipliers for the weave. 1.0 = uniform along
+# the spine. Higher values in one region = more crossings there
+# (tighter weave); lower = looser. Interpolated as a piecewise-
+# linear function across (0, top), (0.5, middle), (1, bottom).
+DEFAULT_BRAID_DENSITY_TOP = 1.0
+DEFAULT_BRAID_DENSITY_MIDDLE = 1.0
+DEFAULT_BRAID_DENSITY_BOTTOM = 1.0
 DEFAULT_BRAID_SAMPLES = 32             # helix smoothness; 32 covers most spines
 # Nyquist / aliasing floor: fewer than this many samples PER FULL TURN and
 # the generated helix folds into a zig-zag instead of a smooth spiral.

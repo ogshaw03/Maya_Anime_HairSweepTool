@@ -209,6 +209,97 @@ def _arc_length(positions: List[Vec3]) -> float:
 # Strand curve generation
 # --------------------------------------------------------------------------- #
 
+# --------------------------------------------------------------------------- #
+# Density profile — per-region weave tightness (top/middle/bottom).
+# --------------------------------------------------------------------------- #
+
+def _density_at(u: float, top: float, middle: float, bottom: float) -> float:
+    """Piecewise-linear density multiplier at normalised spine
+    position ``u`` (0 = root, 1 = tip). Knots: (0, top), (0.5,
+    middle), (1, bottom)."""
+    if u <= 0.0:
+        return top
+    if u >= 1.0:
+        return bottom
+    if u <= 0.5:
+        t = u / 0.5
+        return top * (1.0 - t) + middle * t
+    t = (u - 0.5) / 0.5
+    return middle * (1.0 - t) + bottom * t
+
+
+def _cumulative_density(u: float, top: float, middle: float,
+                        bottom: float) -> float:
+    """Analytic ∫₀ᵘ density(v) dv for the piecewise-linear density
+    profile. When all three multipliers are 1.0 this equals ``u``,
+    so the "constant total turns" formula still holds at defaults.
+
+    Result units are dimensionless (u ∈ [0,1]); multiply by
+    ``turns_per_length × spine_length`` to convert to total turns
+    completed by position ``u``.
+    """
+    if u <= 0.0:
+        return 0.0
+    if u >= 1.0:
+        # Full integral = first half + second half of the piecewise
+        # linear function. Each half's integral is (start+end)/2 × width.
+        return (top + middle) * 0.25 + (middle + bottom) * 0.25
+    if u <= 0.5:
+        # Density from 0 to u: linear top → mid at u=0.5.
+        # ∫ = top·u + (middle − top)·u²
+        return top * u + (middle - top) * u * u
+    # Region 0.5 → u: linear mid → bottom.
+    first_half = (top + middle) * 0.25
+    ou = u - 0.5
+    return first_half + middle * ou + (bottom - middle) * ou * ou
+
+
+def _strand_offset_at(
+    u: float,
+    phase_base: float,
+    turns: float,
+    radius: float,
+    tip_taper: float,
+    depth_ratio: float,
+    density_top: float,
+    density_middle: float,
+    density_bottom: float,
+    tail_length: float,
+) -> tuple:
+    """Return the (width, depth) offset in the (N, B) plane for a
+    single strand at parameter u. Handles the braid → tail split:
+
+    * ``u < tie_off``: sinusoidal weave (planar 3-strand braid) with
+      the density curve controlling local turn rate.
+    * ``u >= tie_off``: tail — freeze the (w, d) values from the
+      braid formula at ``tie_off`` and linearly taper them to (0, 0)
+      at the spine tip so the strand comes to a point beyond the
+      tie. Because each strand's tie value is at a different point
+      of its sine wave, the three strands emerge from the tie at
+      three visibly-separate spots and taper to three visibly-
+      separate tips — the tassel look at the bottom of a braid.
+    """
+    tie_off = 1.0 - max(0.0, min(0.99, tail_length))
+
+    def _braid_wd(u_val):
+        cum = _cumulative_density(
+            u_val, density_top, density_middle, density_bottom)
+        theta = phase_base + 2.0 * math.pi * turns * cum
+        taper = max(0.0, 1.0 - tip_taper * u_val)
+        w = radius * math.sin(theta) * taper
+        d = radius * depth_ratio * math.sin(2.0 * theta) * taper
+        return w, d
+
+    if tie_off >= 1.0 or u < tie_off:
+        return _braid_wd(u)
+    # Tail region.
+    w_tie, d_tie = _braid_wd(tie_off)
+    tail_span = 1.0 - tie_off
+    tail_progress = (u - tie_off) / max(1e-9, tail_span)
+    tail_taper = max(0.0, 1.0 - tail_progress)
+    return w_tie * tail_taper, d_tie * tail_taper
+
+
 def _build_strand_curve(
     positions: List[Vec3],
     normals: List[Vec3],
@@ -218,6 +309,10 @@ def _build_strand_curve(
     radius: float,
     tip_taper: float,
     depth_ratio: float,
+    density_top: float,
+    density_middle: float,
+    density_bottom: float,
+    tail_length: float,
     name: str,
 ) -> str:
     """Build a cubic NURBS curve for one strand of a flat 3-strand braid.
@@ -247,12 +342,9 @@ def _build_strand_curve(
     points: List[Vec3] = []
     for i in range(n):
         u = float(i) / float(n - 1)
-        theta = phase_base + 2.0 * math.pi * turns * u
-        taper = max(0.0, 1.0 - tip_taper * u)
-        # Side-to-side wave in the braid's flat plane.
-        w = radius * math.sin(theta) * taper
-        # Over/under wave — figure-8 second harmonic.
-        d = radius * depth_ratio * math.sin(2.0 * theta) * taper
+        w, d = _strand_offset_at(
+            u, phase_base, turns, radius, tip_taper, depth_ratio,
+            density_top, density_middle, density_bottom, tail_length)
         N = normals[i]
         B = binormals[i]
         offset = (
@@ -331,6 +423,10 @@ _ATTR_RADIUS = "braidRadius"
 _ATTR_THICKNESS = "braidStrandThickness"
 _ATTR_TIP_TAPER = "braidTipTaper"
 _ATTR_DEPTH_RATIO = "braidDepthRatio"
+_ATTR_TAIL_LENGTH = "braidTailLength"
+_ATTR_DENSITY_TOP = "braidDensityTop"
+_ATTR_DENSITY_MIDDLE = "braidDensityMiddle"
+_ATTR_DENSITY_BOTTOM = "braidDensityBottom"
 
 
 def _ensure_bool_attr(node: str, attr: str) -> None:
@@ -372,6 +468,10 @@ def _stamp_braid_params(
         (_ATTR_THICKNESS, "strand_thickness"),
         (_ATTR_TIP_TAPER, "tip_taper"),
         (_ATTR_DEPTH_RATIO, "depth_ratio"),
+        (_ATTR_TAIL_LENGTH, "tail_length"),
+        (_ATTR_DENSITY_TOP, "density_top"),
+        (_ATTR_DENSITY_MIDDLE, "density_middle"),
+        (_ATTR_DENSITY_BOTTOM, "density_bottom"),
     ):
         _ensure_float_attr(group, attr)
         cmds.setAttr(group + "." + attr, float(params[key]))
@@ -391,6 +491,17 @@ def read_braid_params(group: str) -> Optional[dict]:
     kwargs plus ``spine_uuid`` and ``strand_mesh_uuids``."""
     if not is_braid_group(group):
         return None
+    def _read_float_or(attr, default):
+        # Backwards-compat: older Braid groups (v0.4.5 and earlier)
+        # don't have the tail / density attrs. Return the default
+        # instead of failing so those groups still live-edit.
+        if not cmds.attributeQuery(attr, node=group, exists=True):
+            return float(default)
+        try:
+            return float(cmds.getAttr(group + "." + attr))
+        except Exception:
+            return float(default)
+
     try:
         uuids_str = cmds.getAttr(group + "." + _ATTR_STRAND_UUIDS) or ""
         return {
@@ -407,6 +518,18 @@ def read_braid_params(group: str) -> Optional[dict]:
                 float(cmds.getAttr(group + "." + _ATTR_TIP_TAPER)),
             "depth_ratio":
                 float(cmds.getAttr(group + "." + _ATTR_DEPTH_RATIO)),
+            "tail_length":
+                _read_float_or(_ATTR_TAIL_LENGTH,
+                               C.DEFAULT_BRAID_TAIL_LENGTH),
+            "density_top":
+                _read_float_or(_ATTR_DENSITY_TOP,
+                               C.DEFAULT_BRAID_DENSITY_TOP),
+            "density_middle":
+                _read_float_or(_ATTR_DENSITY_MIDDLE,
+                               C.DEFAULT_BRAID_DENSITY_MIDDLE),
+            "density_bottom":
+                _read_float_or(_ATTR_DENSITY_BOTTOM,
+                               C.DEFAULT_BRAID_DENSITY_BOTTOM),
         }
     except Exception:
         return None
@@ -504,8 +627,14 @@ def rebuild_braid(group: str, **overrides) -> None:
         raise RuntimeError(
             "スパインカーブの長さがゼロ相当のため rebuild できません。")
     total_turns = params["turns_per_length"] * spine_length
+    density_scale = _cumulative_density(
+        1.0,
+        params["density_top"],
+        params["density_middle"],
+        params["density_bottom"])
+    effective_total_turns = total_turns * max(1.0, density_scale)
     required = int(math.ceil(
-        abs(total_turns) * C.BRAID_SAMPLES_PER_TURN))
+        abs(effective_total_turns) * C.BRAID_SAMPLES_PER_TURN))
     if required > num_samples:
         num_samples = required
         positions = _sample_positions(spine_curve, num_samples)
@@ -519,18 +648,22 @@ def rebuild_braid(group: str, **overrides) -> None:
         if not curve or not cmds.objExists(curve):
             continue
         phase = 2.0 * math.pi * (float(idx) / 3.0)
-        # Reuse the same maths as fresh creation via _build_strand_curve —
-        # but that helper *creates* a curve. We want to *replace* one.
-        # So compute the points inline.
         n = len(positions)
         points: List[Vec3] = []
         for j in range(n):
             u = float(j) / float(n - 1)
-            theta = phase + 2.0 * math.pi * total_turns * u
-            taper = max(0.0, 1.0 - params["tip_taper"] * u)
-            w = params["radius"] * math.sin(theta) * taper
-            d = (params["radius"] * params["depth_ratio"]
-                 * math.sin(2.0 * theta) * taper)
+            w, d = _strand_offset_at(
+                u,
+                phase,
+                total_turns,
+                params["radius"],
+                params["tip_taper"],
+                params["depth_ratio"],
+                params["density_top"],
+                params["density_middle"],
+                params["density_bottom"],
+                params["tail_length"],
+            )
             N = normals[j]
             B = binormals[j]
             points.append((
@@ -588,6 +721,10 @@ def create_braid_from_spine(
     strand_thickness: float = C.DEFAULT_BRAID_STRAND_THICKNESS,
     tip_taper: float = C.DEFAULT_BRAID_TIP_TAPER,
     depth_ratio: float = C.DEFAULT_BRAID_DEPTH_RATIO,
+    tail_length: float = C.DEFAULT_BRAID_TAIL_LENGTH,
+    density_top: float = C.DEFAULT_BRAID_DENSITY_TOP,
+    density_middle: float = C.DEFAULT_BRAID_DENSITY_MIDDLE,
+    density_bottom: float = C.DEFAULT_BRAID_DENSITY_BOTTOM,
     num_samples: int = C.DEFAULT_BRAID_SAMPLES,
     group: bool = True,
 ) -> List[str]:
@@ -664,13 +801,21 @@ def create_braid_from_spine(
     # turns_per_length is a rate; total turns depends on the length.
     total_turns = turns_per_length * spine_length
 
+    # Density curve boosts (or reduces) effective total turns —
+    # cumulative_density(1) is the average multiplier over the
+    # spine. Account for that when computing the Nyquist floor so
+    # a heavily-densified region still gets enough samples.
+    density_scale = _cumulative_density(
+        1.0, density_top, density_middle, density_bottom)
+    effective_total_turns = total_turns * max(1.0, density_scale)
+
     # Nyquist / aliasing floor: bump ``num_samples`` up so the helix
     # gets at least BRAID_SAMPLES_PER_TURN points per revolution.
     # Without this, a long spine + high turns setting produces a
     # zig-zag instead of a smooth spiral because the offset direction
     # wraps around faster than we're sampling it.
     required = int(math.ceil(
-        abs(total_turns) * C.BRAID_SAMPLES_PER_TURN))
+        abs(effective_total_turns) * C.BRAID_SAMPLES_PER_TURN))
     if required > num_samples:
         num_samples = required
         positions = _sample_positions(spine_curve, num_samples)
@@ -696,6 +841,10 @@ def create_braid_from_spine(
                 radius=radius,
                 tip_taper=tip_taper,
                 depth_ratio=depth_ratio,
+                density_top=density_top,
+                density_middle=density_middle,
+                density_bottom=density_bottom,
+                tail_length=tail_length,
                 name=cname,
             ))
 
@@ -781,6 +930,10 @@ def create_braid_from_spine(
             "strand_thickness": strand_thickness,
             "tip_taper": tip_taper,
             "depth_ratio": depth_ratio,
+            "tail_length": tail_length,
+            "density_top": density_top,
+            "density_middle": density_middle,
+            "density_bottom": density_bottom,
         }
         stamp_target = None
         if group and strand_meshes:
