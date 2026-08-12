@@ -1213,6 +1213,7 @@ def _tail_strand_points(
     tail_length: float,
     braid_radius: float,
     num_samples: int = 0,
+    twist_offset_rad: float = 0.0,
 ) -> List[Vec3]:
     """Compute world-space points for one tail strand curve.
 
@@ -1221,42 +1222,57 @@ def _tail_strand_points(
     is retained in the signature for callers that used to pass it
     but is ignored — the CV count is fixed at ``len(_TAIL_TEMPLATE)``
     so the resulting NURBS matches the reference exactly.
+
+    ``twist_offset_rad`` shifts the strand's angular position
+    around the spine tangent by a constant angle. Same knob the
+    woven strands use, so dragging "回転オフセット" in the UI
+    rotates BOTH the braid pattern and the tail bundle together
+    (they'd de-sync otherwise — braid rotates, tail sits still).
     """
     tie_off = 1.0 - max(0.0, min(0.99, tail_length))
     if tie_off >= 1.0:
         return []
     mn, mx = _spine_param_range(spine_curve)
     span = mx - mn
-    points: List[Vec3] = []
-    for t, r_shape in _TAIL_TEMPLATE:
+    effective_phase = phase + twist_offset_rad
+    cos_p = math.cos(effective_phase)
+    sin_p = math.sin(effective_phase)
+
+    # Pre-compute positions AND tangents for every tail sample,
+    # then run them through the same RMF frame builder the braid
+    # strands use. Before this the tail computed its own frame at
+    # every sample from ``cross(ref, T)`` — an inline recomputation
+    # that never picked up any of the frame algorithm improvements
+    # made to the braid path (fixed-reference / RMF / smart n0 /
+    # Wang). Every ``rotation fix`` shipped so far only touched the
+    # braid; the tail was always using the old naive frame, which
+    # is why the twist-offset slider looked like it did nothing to
+    # the tail bundle and why the tail's orientation could
+    # disagree with the braid.
+    tail_positions: List[Vec3] = []
+    for t, _ in _TAIL_TEMPLATE:
         u = tie_off + t * (1.0 - tie_off)
         param = mn + span * u
         p = cmds.pointOnCurve(spine_curve, parameter=param,
                               position=True)
-        # Local frame at u — small finite-difference tangent.
-        d = max(1e-6, span * 1e-3)
-        p0 = cmds.pointOnCurve(
-            spine_curve, parameter=max(mn, param - d),
-            position=True)
-        p1 = cmds.pointOnCurve(
-            spine_curve, parameter=min(mx, param + d),
-            position=True)
-        T = _normalize(
-            (p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2]))
-        if _length(T) < 1e-6:
-            T = (0.0, 1.0, 0.0)
-        ref = (0.0, 1.0, 0.0) if abs(T[1]) < 0.9 else (1.0, 0.0, 0.0)
-        N = _normalize(_cross(ref, T))
-        if _length(N) < 1e-6:
-            N = _normalize(_cross((1.0, 0.0, 0.0), T))
-        B = _normalize(_cross(T, N))
+        tail_positions.append(
+            (float(p[0]), float(p[1]), float(p[2])))
+    tail_tangents = _tangents_from_positions(tail_positions)
+    tail_normals, tail_binormals = _parallel_transport_frames(
+        tail_tangents, tail_positions)
+
+    points: List[Vec3] = []
+    for i, (_, r_shape) in enumerate(_TAIL_TEMPLATE):
+        p = tail_positions[i]
+        N = tail_normals[i]
+        B = tail_binormals[i]
         r = braid_radius * r_shape
-        offset_w = r * math.cos(phase)
-        offset_d = r * math.sin(phase)
+        offset_w = r * cos_p
+        offset_d = r * sin_p
         points.append((
-            float(p[0]) + offset_w * N[0] + offset_d * B[0],
-            float(p[1]) + offset_w * N[1] + offset_d * B[1],
-            float(p[2]) + offset_w * N[2] + offset_d * B[2],
+            p[0] + offset_w * N[0] + offset_d * B[0],
+            p[1] + offset_w * N[1] + offset_d * B[1],
+            p[2] + offset_w * N[2] + offset_d * B[2],
         ))
     return points
 
@@ -1307,6 +1323,7 @@ def _create_tail_strands(
     braid_strand_thickness: float,
     parent_group: Optional[str],
     base_name: str,
+    twist_offset_rad: float = 0.0,
 ) -> List[str]:
     """Generate N tail strand curves and feed them through the hair
     pipeline so each becomes an independent hair strand (with its
@@ -1326,7 +1343,8 @@ def _create_tail_strands(
         phase = 2.0 * math.pi * (float(i) / float(tail_count))
         pts = _tail_strand_points(
             spine_curve, phase, tail_length, braid_radius,
-            tail_samples)
+            tail_samples,
+            twist_offset_rad=twist_offset_rad)
         if len(pts) < 2:
             continue
         cname = "{0}_tail{1:02d}_curve".format(base_name, i + 1)
@@ -1454,6 +1472,7 @@ def _update_tail_strands_in_place(
     tail_tip_taper: float,
     braid_strand_thickness: float,
     tail_mesh_uuids: List[str],
+    twist_offset_rad: float = 0.0,
 ) -> bool:
     """When the tail strand COUNT hasn't changed, update each tail
     strand's guide curve CVs in-place so per-strand hair tweaks
@@ -1474,7 +1493,8 @@ def _update_tail_strands_in_place(
         phase = 2.0 * math.pi * (float(i) / float(count))
         pts = _tail_strand_points(
             spine_curve, phase, tail_length, braid_radius,
-            tail_samples)
+            tail_samples,
+            twist_offset_rad=twist_offset_rad)
         if len(pts) < 2:
             return False
         _replace_curve_cvs(curve, pts)
@@ -1922,7 +1942,9 @@ def _rebuild_braid_inner(group: str, overrides: dict) -> None:
         tail_updated_in_place = _update_tail_strands_in_place(
             group, spine_curve, params["tail_length"],
             params["radius"], tail_thickness, tail_tip_taper,
-            params["strand_thickness"], existing_tail_uuids)
+            params["strand_thickness"], existing_tail_uuids,
+            twist_offset_rad=math.radians(
+                params.get("twist_offset_deg", 0.0)))
         if tail_updated_in_place:
             # In-place path skips _stamp_tail_meta by design (UUIDs
             # unchanged) — but the numeric params may have
@@ -1936,7 +1958,9 @@ def _rebuild_braid_inner(group: str, overrides: dict) -> None:
             spine_curve, params["tail_length"],
             params["radius"], desired_count, tail_thickness,
             tail_tip_taper, params["strand_thickness"],
-            group, base_name_hint)
+            group, base_name_hint,
+            twist_offset_rad=math.radians(
+                params.get("twist_offset_deg", 0.0)))
         new_tail_uuids: List[str] = []
         for m in new_tail_meshes:
             try:
@@ -2283,7 +2307,8 @@ def create_braid_from_spine(
         tail_meshes = _create_tail_strands(
             spine_curve, tail_length, radius,
             tail_strand_count, tail_thickness, tail_tip_taper,
-            strand_thickness, stamp_target, base_name)
+            strand_thickness, stamp_target, base_name,
+            twist_offset_rad=math.radians(twist_offset_deg))
         tail_uuids: List[str] = []
         for m in tail_meshes:
             try:
