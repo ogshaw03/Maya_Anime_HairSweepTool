@@ -987,12 +987,12 @@ class HairBuilderUI(object):
             change_cb=self._cb_braid_turns_change)
         self.braid_radius = _slider_with_reset(
             braid_part_col, "編みの太さ (Braid Radius)",
-            C.DEFAULT_BRAID_RADIUS, 0.05, 5.0,
+            C.DEFAULT_BRAID_RADIUS, 0.02, 2.0,
             drag_cb=self._cb_braid_radius_drag,
             change_cb=self._cb_braid_radius_change)
         self.braid_thickness = _slider_with_reset(
             braid_part_col, "ストランド 1 本の太さ (Strand Thickness)",
-            C.DEFAULT_BRAID_STRAND_THICKNESS, 0.01, 3.0,
+            C.DEFAULT_BRAID_STRAND_THICKNESS, 0.005, 1.0,
             drag_cb=self._cb_braid_thickness_drag,
             change_cb=self._cb_braid_thickness_change)
         # Braid taper — 3 sliders (root/middle/tip) + gradient
@@ -1072,7 +1072,7 @@ class HairBuilderUI(object):
             change_cb=self._cb_braid_tail_count_change)
         self.braid_tail_thickness = _slider_with_reset(
             tail_part_col, "尾ストランドの初期太さ",
-            C.DEFAULT_BRAID_TAIL_THICKNESS, 0.01, 3.0,
+            C.DEFAULT_BRAID_TAIL_THICKNESS, 0.005, 1.0,
             drag_cb=self._cb_braid_tail_thick_drag,
             change_cb=self._cb_braid_tail_thick_change)
         self.braid_tail_tip_taper = _slider_with_reset(

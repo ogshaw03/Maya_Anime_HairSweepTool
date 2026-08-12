@@ -1032,6 +1032,42 @@ def _tail_strand_points(
     return points
 
 
+def _apply_tail_taper(creators, tail_thickness: float,
+                      tail_tip_taper: float,
+                      braid_strand_thickness: float) -> None:
+    """Set each tail sweepMeshCreator's ``taperCurve`` so the
+    strand's ROOT (the end that emerges from the hair tie)
+    matches the braid strand thickness, and the TIP follows the
+    user's ``tail_tip_taper`` slider. Middle stays uniform.
+
+    taperCurve is a multiplier on ``scaleProfileX``:
+        effective_width(u) = scaleProfileX × taperCurve(u)
+    We keep scaleProfileX = tail_thickness (the user's slider)
+    and compensate at the root:
+        root_scale = braid_strand_thickness / tail_thickness
+
+    Result at the root: ``tail_thickness × root_scale``
+                      = ``braid_strand_thickness`` — matches the
+                        braid strand it comes out of, regardless
+                        of what the user has set the tail_thickness
+                        slider to. Tail can then narrow (or widen)
+                        toward the tip via tail_tip_taper.
+    """
+    if tail_thickness <= 1e-6 or not creators:
+        return
+    root_scale = float(braid_strand_thickness) / float(tail_thickness)
+    for c in creators:
+        if not cmds.objExists(c):
+            continue
+        try:
+            hair.set_taper_profile(
+                c, root_scale=root_scale,
+                middle_scale=1.0,
+                tip_scale=float(tail_tip_taper))
+        except Exception:
+            pass
+
+
 def _create_tail_strands(
     spine_curve: str,
     tail_length: float,
@@ -1039,6 +1075,7 @@ def _create_tail_strands(
     tail_strand_count: int,
     tail_thickness: float,
     tail_tip_taper: float,
+    braid_strand_thickness: float,
     parent_group: Optional[str],
     base_name: str,
 ) -> List[str]:
@@ -1079,8 +1116,10 @@ def _create_tail_strands(
         # Tail-tuned subdivisions (lower than the woven strand
         # because tail curves are simple arcs, not helices) but
         # still above the global default so the tail reads as
-        # smooth hair strands. Keep the default tip_scale so each
-        # tail strand still tapers to a hair-like point at its tip.
+        # smooth hair strands. tip_scale here just seeds the
+        # taperCurve — the real taper (including the root =
+        # braid_thickness compensation) is applied via
+        # ``_apply_tail_taper`` after the mesh exists.
         hair.create_hair_from_selected_curves(
             thickness=tail_thickness,
             tip_scale=tail_tip_taper,
@@ -1107,6 +1146,17 @@ def _create_tail_strands(
     # braid strands use.
     _apply_start_to_end_interpolation(
         tail_meshes, C.DEFAULT_BRAID_TAIL_INTERP_STEPS)
+
+    # Root-matches-braid taper — override the seed taperCurve set
+    # by create_hair_from_selected_curves so each tail strand's
+    # emergent width at the tie equals braid_strand_thickness.
+    tail_creators: List[str] = []
+    for m in tail_meshes:
+        cs = su.sweep_creators_from_nodes([m]) or []
+        tail_creators.extend(cs)
+    _apply_tail_taper(
+        tail_creators, tail_thickness, tail_tip_taper,
+        braid_strand_thickness)
 
     # Reparent tail meshes under the Braid geom group so the tail
     # moves with the braid and appears together in the outliner.
@@ -1173,6 +1223,7 @@ def _update_tail_strands_in_place(
     braid_radius: float,
     tail_thickness: float,
     tail_tip_taper: float,
+    braid_strand_thickness: float,
     tail_mesh_uuids: List[str],
 ) -> bool:
     """When the tail strand COUNT hasn't changed, update each tail
@@ -1203,6 +1254,7 @@ def _update_tail_strands_in_place(
     # during in-place rebuild (the in-place path used to skip
     # thickness — and now also handles tip taper via the
     # taperCurve ramp).
+    all_creators: List[str] = []
     for uid in tail_mesh_uuids:
         matches = cmds.ls(uid) or []
         if not matches:
@@ -1215,15 +1267,14 @@ def _update_tail_strands_in_place(
                 cmds.setAttr(c + ".scaleProfileX", tail_thickness)
             except Exception:
                 pass
-            try:
-                # Root/middle stay at 1.0 (uniform along most of
-                # the length); the "先細り" slider is exclusively
-                # the tip value.
-                hair.set_taper_profile(
-                    c, root_scale=1.0, middle_scale=1.0,
-                    tip_scale=float(tail_tip_taper))
-            except Exception:
-                pass
+            all_creators.append(c)
+    # Root scale = braid_thickness / tail_thickness so the tail's
+    # emergent width at the tie always matches the braid regardless
+    # of the tail_thickness slider. tip follows the tail_tip_taper
+    # slider, middle stays uniform.
+    _apply_tail_taper(
+        all_creators, tail_thickness, tail_tip_taper,
+        braid_strand_thickness)
     return True
 
 
@@ -1616,7 +1667,7 @@ def rebuild_braid(group: str, **overrides) -> None:
         tail_updated_in_place = _update_tail_strands_in_place(
             group, spine_curve, params["tail_length"],
             params["radius"], tail_thickness, tail_tip_taper,
-            existing_tail_uuids)
+            params["strand_thickness"], existing_tail_uuids)
         if tail_updated_in_place:
             # In-place path skips _stamp_tail_meta by design (UUIDs
             # unchanged) — but the numeric params may have
@@ -1629,7 +1680,8 @@ def rebuild_braid(group: str, **overrides) -> None:
         new_tail_meshes = _create_tail_strands(
             spine_curve, params["tail_length"],
             params["radius"], desired_count, tail_thickness,
-            tail_tip_taper, group, base_name_hint)
+            tail_tip_taper, params["strand_thickness"],
+            group, base_name_hint)
         new_tail_uuids: List[str] = []
         for m in new_tail_meshes:
             try:
@@ -1972,7 +2024,7 @@ def create_braid_from_spine(
         tail_meshes = _create_tail_strands(
             spine_curve, tail_length, radius,
             tail_strand_count, tail_thickness, tail_tip_taper,
-            stamp_target, base_name)
+            strand_thickness, stamp_target, base_name)
         tail_uuids: List[str] = []
         for m in tail_meshes:
             try:

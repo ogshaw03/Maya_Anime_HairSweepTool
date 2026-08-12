@@ -108,8 +108,8 @@ BRAID_GROUP_PREFIX = "Braid_"
 # (see BRAID_STRAND_SUBDIV_LENGTH) so the mesh follows the twist
 # smoothly instead of appearing as a chain of angular blocks.
 DEFAULT_BRAID_TURNS_PER_LENGTH = 0.5   # ~5 full turns over a 10-unit spine
-DEFAULT_BRAID_RADIUS = 0.5             # offset from spine to each strand centre
-DEFAULT_BRAID_STRAND_THICKNESS = 0.2   # per-strand mesh thickness (~40% of radius)
+DEFAULT_BRAID_RADIUS = 0.2             # offset from spine to each strand centre
+DEFAULT_BRAID_STRAND_THICKNESS = 0.1   # per-strand mesh thickness (~50% of radius)
 DEFAULT_BRAID_TIP_TAPER = 0.6          # 0=constant radius, 1=radius→0 at tip
 # Depth ratio — how deep the over/under crossings sit relative to the
 # braid's side-to-side width. Real hair braids are essentially flat
@@ -118,19 +118,17 @@ DEFAULT_BRAID_TIP_TAPER = 0.6          # 0=constant radius, 1=radius→0 at tip
 DEFAULT_BRAID_DEPTH_RATIO = 0.4
 # Tail: fraction of the spine (from the tip end) reserved for the
 # "un-braided" tail where the strands come out of the tie and hang
-# as a ponytail-like tassel. Matches ma/test001.ma exactly (0.176)
-# so first-generation output looks proportional to the reference
-# silhouette. Higher values stretch the same shape multipliers
-# over a longer Y range and read as a wispy elongated tail
-# instead of a compact teardrop.
-DEFAULT_BRAID_TAIL_LENGTH = 0.176
+# as a ponytail-like tassel. 0.20 gives a slightly longer tail
+# than the reference (0.176) — small nudge upward so the tassel
+# reads clearly at typical spine lengths.
+DEFAULT_BRAID_TAIL_LENGTH = 0.20
 # Per-region density multipliers for the weave. 1.0 = uniform along
 # the spine. Higher values in one region = more crossings there
 # (tighter weave); lower = looser. Interpolated as a piecewise-
 # linear function across (0, top), (0.5, middle), (1, bottom).
-DEFAULT_BRAID_DENSITY_TOP = 1.0
+DEFAULT_BRAID_DENSITY_TOP = 2.0
 DEFAULT_BRAID_DENSITY_MIDDLE = 1.0
-DEFAULT_BRAID_DENSITY_BOTTOM = 1.0
+DEFAULT_BRAID_DENSITY_BOTTOM = 1.7
 DEFAULT_BRAID_SAMPLES = 32             # helix smoothness; 32 covers most spines
 # Tail strands: after the tie the braid opens into N free hair
 # strands (each its own curve + mesh + sweepMeshCreator) so users
@@ -140,12 +138,14 @@ DEFAULT_BRAID_SAMPLES = 32             # helix smoothness; 32 covers most spines
 # forces a full recreate.
 DEFAULT_BRAID_TAIL_STRAND_COUNT = 6
 DEFAULT_BRAID_TAIL_SAMPLES = 12       # samples along each tail strand curve
-DEFAULT_BRAID_TAIL_THICKNESS = 0.132  # initial strand thickness (matches ma/test001.ma)
+DEFAULT_BRAID_TAIL_THICKNESS = 0.1    # initial strand thickness (visible-but-slim)
 # Tail tip taper — writes to each tail sweepMeshCreator's
-# ``taperCurve`` tip value (root and middle stay at 1.0). 0.0 =
-# strand comes to a needle point at the tip, 1.0 = uniform
-# thickness the whole way. Default 0.05 gives sharp hair-like tips.
-DEFAULT_BRAID_TAIL_TIP_TAPER = 0.05
+# ``taperCurve`` tip value. 0.0 = strand comes to a needle point
+# at the tip (default — matches classic hair tassel silhouette),
+# 1.0 = uniform thickness. Root value follows braid_strand_thickness
+# automatically (see _apply_tail_taper in braid.py) so the tail
+# root always matches the braid it emerges from.
+DEFAULT_BRAID_TAIL_TIP_TAPER = 0.0
 
 # sweepMeshCreator subdivisions used when the braid feeds curves
 # through hair.create_hair_from_selected_curves. Overriding the
