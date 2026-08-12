@@ -116,6 +116,12 @@ DEFAULT_BRAID_TIP_TAPER = 0.6          # 0=constant radius, 1=radius→0 at tip
 # with a shallow depth (0.3-0.5). 1.0 makes depth and width equal
 # (chunky rope-looking braid); 0 collapses to a flat 2D zig-zag.
 DEFAULT_BRAID_DEPTH_RATIO = 0.4
+
+# Global twist offset (degrees) added to every strand's angular
+# position around the spine tangent. A quick way to fix residual
+# frame rotation on heavily-bent curves by hand — cheaper than
+# trying to solve the geometry in all cases. 0 = no offset.
+DEFAULT_BRAID_TWIST_OFFSET_DEG = 0.0
 # Tail: fraction of the spine (from the tip end) reserved for the
 # "un-braided" tail where the strands come out of the tie and hang
 # as a ponytail-like tassel. 0.20 gives a slightly longer tail

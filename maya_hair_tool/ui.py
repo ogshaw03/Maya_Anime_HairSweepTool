@@ -1051,6 +1051,16 @@ class HairBuilderUI(object):
             C.DEFAULT_BRAID_DENSITY_BOTTOM, 0.1, 3.0,
             drag_cb=self._cb_braid_density_bottom_drag,
             change_cb=self._cb_braid_density_bottom_change)
+        # Manual rotation escape hatch — for cases where curve
+        # geometry makes the auto RMF frame land at an unwanted
+        # orientation, spin the whole braid around the spine
+        # tangent by hand rather than trying to solve every 3D
+        # curve algorithmically.
+        self.braid_twist_offset = _slider_with_reset(
+            braid_part_col, "回転オフセット (Twist -180..180°)",
+            C.DEFAULT_BRAID_TWIST_OFFSET_DEG, -180.0, 180.0,
+            drag_cb=self._cb_braid_twist_offset_drag,
+            change_cb=self._cb_braid_twist_offset_change)
 
         # --- 尾部分 (tail zone) -----------------------------------
         tail_part = cmds.frameLayout(
@@ -1603,6 +1613,8 @@ class HairBuilderUI(object):
                 density_top=_read_float(self.braid_density_top),
                 density_middle=_read_float(self.braid_density_middle),
                 density_bottom=_read_float(self.braid_density_bottom),
+                twist_offset_deg=_read_float(
+                    self.braid_twist_offset),
             )
         except Exception as exc:
             cmds.warning("[maya_hair_tool] 三つ編み生成失敗: {0}".format(exc))
@@ -1834,6 +1846,12 @@ class HairBuilderUI(object):
     def _cb_braid_density_bottom_change(self, value):
         self._braid_live_apply("density_bottom", value, True)
 
+    def _cb_braid_twist_offset_drag(self, value):
+        self._braid_live_apply("twist_offset_deg", value, False)
+
+    def _cb_braid_twist_offset_change(self, value):
+        self._braid_live_apply("twist_offset_deg", value, True)
+
     def _sync_create_panel_frames(self):
         """Hide the non-applicable Create-panel frame based on the
         current selection so the user sees only the sliders that
@@ -1954,6 +1972,11 @@ class HairBuilderUI(object):
             cmds.floatSliderGrp(
                 self.braid_density_bottom, edit=True,
                 value=params["density_bottom"])
+            cmds.floatSliderGrp(
+                self.braid_twist_offset, edit=True,
+                value=params.get(
+                    "twist_offset_deg",
+                    C.DEFAULT_BRAID_TWIST_OFFSET_DEG))
         except Exception:
             pass
         finally:

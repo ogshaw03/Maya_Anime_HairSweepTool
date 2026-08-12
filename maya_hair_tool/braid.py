@@ -383,6 +383,7 @@ def _strand_offset_at(
     density_bottom: float,
     tail_length: float = 0.0,
     taper_ramp=None,
+    twist_offset_rad: float = 0.0,
 ) -> tuple:
     """Return the (width, depth) offset in the (N, B) plane for
     one BRAID (woven) strand at parameter u ∈ [0, 1].
@@ -400,7 +401,10 @@ def _strand_offset_at(
     """
     cum = _cumulative_density(
         u, density_top, density_middle, density_bottom)
-    theta = phase_base + 2.0 * math.pi * turns * cum
+    # ``twist_offset_rad`` rotates every strand around the local
+    # tangent by the same constant angle — used to fix residual
+    # frame rotation on heavily-bent spines by hand.
+    theta = phase_base + twist_offset_rad + 2.0 * math.pi * turns * cum
     if taper_ramp:
         taper = max(0.0, _sample_taper_ramp(u, taper_ramp))
     else:
@@ -446,13 +450,14 @@ def _append_endpoint_at(points, positions, normals, binormals,
                          u, phase_base, turns, radius, tip_taper,
                          depth_ratio, density_top, density_middle,
                          density_bottom, tail_length=0.0,
-                         taper_ramp=None):
+                         taper_ramp=None, twist_offset_rad=0.0):
     p, N, B = _sample_frame_interpolated(
         u, positions, normals, binormals)
     w, d = _strand_offset_at(
         u, phase_base, turns, radius, tip_taper, depth_ratio,
         density_top, density_middle, density_bottom,
-        tail_length=tail_length, taper_ramp=taper_ramp)
+        tail_length=tail_length, taper_ramp=taper_ramp,
+        twist_offset_rad=twist_offset_rad)
     points.append((
         p[0] + w * N[0] + d * B[0],
         p[1] + w * N[1] + d * B[1],
@@ -525,6 +530,7 @@ def _build_strand_curve(
     tail_length: float,
     name: str,
     taper_ramp=None,
+    twist_offset_rad: float = 0.0,
 ) -> str:
     """Build a cubic NURBS curve for one strand of a flat 3-strand braid.
 
@@ -559,7 +565,8 @@ def _build_strand_curve(
         w, d = _strand_offset_at(
             u, phase_base, turns, radius, tip_taper, depth_ratio,
             density_top, density_middle, density_bottom,
-            tail_length=tail_length, taper_ramp=taper_ramp)
+            tail_length=tail_length, taper_ramp=taper_ramp,
+            twist_offset_rad=twist_offset_rad)
         N = normals[i]
         B = binormals[i]
         offset = (
@@ -576,7 +583,8 @@ def _build_strand_curve(
             points, positions, normals, binormals, tie_off,
             phase_base, turns, radius, tip_taper, depth_ratio,
             density_top, density_middle, density_bottom,
-            tail_length=tail_length, taper_ramp=taper_ramp)
+            tail_length=tail_length, taper_ramp=taper_ramp,
+            twist_offset_rad=twist_offset_rad)
 
     # Guard against tail_length so large that the braid region
     # produces fewer than 2 points — cmds.curve needs at least
@@ -666,6 +674,7 @@ _ATTR_TAIL_STRAND_COUNT = "braidTailStrandCount"
 _ATTR_TAIL_THICKNESS = "braidTailThickness"
 _ATTR_TAIL_TIP_TAPER = "braidTailTipTaper"
 _ATTR_TAPER_RAMP = "braidTaperRamp"      # str, "pos:val|pos:val|..."
+_ATTR_TWIST_OFFSET = "braidTwistOffsetDeg"  # float, degrees
 
 
 def _default_braid_taper_ramp() -> List[tuple]:
@@ -793,6 +802,7 @@ def _stamp_braid_params(
         (_ATTR_DENSITY_TOP, "density_top"),
         (_ATTR_DENSITY_MIDDLE, "density_middle"),
         (_ATTR_DENSITY_BOTTOM, "density_bottom"),
+        (_ATTR_TWIST_OFFSET, "twist_offset_deg"),
     ):
         _ensure_float_attr(group, attr)
         cmds.setAttr(group + "." + attr, float(params[key]))
@@ -880,6 +890,10 @@ def read_braid_params(group: str) -> Optional[dict]:
                  if cmds.attributeQuery(
                      _ATTR_TAPER_RAMP, node=group, exists=True)
                  else _default_braid_taper_ramp()),
+            "twist_offset_deg":
+                _read_float_or(
+                    _ATTR_TWIST_OFFSET,
+                    C.DEFAULT_BRAID_TWIST_OFFSET_DEG),
         }
     except Exception:
         return None
@@ -1829,6 +1843,8 @@ def _rebuild_braid_inner(group: str, overrides: dict) -> None:
                 params["density_bottom"],
                 tail_length=params["tail_length"],
                 taper_ramp=params.get("taper_ramp"),
+                twist_offset_rad=math.radians(
+                    params.get("twist_offset_deg", 0.0)),
             )
             N = normals[j]
             B = binormals[j]
@@ -1847,7 +1863,9 @@ def _rebuild_braid_inner(group: str, overrides: dict) -> None:
                 params["density_top"], params["density_middle"],
                 params["density_bottom"],
                 tail_length=params["tail_length"],
-                taper_ramp=params.get("taper_ramp"))
+                taper_ramp=params.get("taper_ramp"),
+                twist_offset_rad=math.radians(
+                    params.get("twist_offset_deg", 0.0)))
         if len(points) < 2:
             # Degenerate tail_length ≈ 1.0 leaves the braid with
             # nothing to draw; skip this strand rather than fail
@@ -1990,6 +2008,7 @@ def create_braid_from_spine(
     tail_thickness: float = C.DEFAULT_BRAID_TAIL_THICKNESS,
     tail_tip_taper: float = C.DEFAULT_BRAID_TAIL_TIP_TAPER,
     taper_ramp=None,
+    twist_offset_deg: float = C.DEFAULT_BRAID_TWIST_OFFSET_DEG,
     density_top: float = C.DEFAULT_BRAID_DENSITY_TOP,
     density_middle: float = C.DEFAULT_BRAID_DENSITY_MIDDLE,
     density_bottom: float = C.DEFAULT_BRAID_DENSITY_BOTTOM,
@@ -2120,6 +2139,7 @@ def create_braid_from_spine(
                 tail_length=tail_length,
                 name=cname,
                 taper_ramp=taper_ramp,
+                twist_offset_rad=math.radians(twist_offset_deg),
             )
             if not built:
                 # Degenerate config produced fewer than 2 CVs.
@@ -2235,6 +2255,7 @@ def create_braid_from_spine(
             "tail_strand_count": tail_strand_count,
             "tail_thickness": tail_thickness,
             "tail_tip_taper": tail_tip_taper,
+            "twist_offset_deg": twist_offset_deg,
         }
         stamp_target = None
         if group and strand_meshes:
