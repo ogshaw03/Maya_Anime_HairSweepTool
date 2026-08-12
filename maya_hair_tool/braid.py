@@ -886,16 +886,22 @@ def _spine_shape_of(spine_curve: str) -> Optional[str]:
 
 def _schedule_rebuild(group_uuid: str) -> None:
     """Enqueue a deferred rebuild for ``group_uuid``. Multiple
-    triggers within the same idle cycle coalesce to ONE rebuild.
-    ``lowestPriority=True`` lets Maya finish its current DG
-    evaluation before we start rewriting curve CVs."""
+    triggers within the same DG cycle coalesce to ONE rebuild.
+
+    Uses plain ``evalDeferred`` (no ``lowestPriority``) so the
+    rebuild fires between mouse-drag events during a live CV edit,
+    not after the whole drag finishes. ``lowestPriority=True``
+    waits for Maya to be fully idle — during a CV drag that means
+    "when the user releases the mouse", which is exactly the
+    perceived-lag behaviour the user reported. Still deferred so
+    we don't recurse inside the attributeChange callback itself.
+    """
     if group_uuid in _pending_rebuilds:
         return
     _pending_rebuilds.add(group_uuid)
     try:
         cmds.evalDeferred(
-            lambda uid=group_uuid: _do_deferred_rebuild(uid),
-            lowestPriority=True)
+            lambda uid=group_uuid: _do_deferred_rebuild(uid))
     except Exception:
         # Fallback — do it immediately if evalDeferred is unavailable
         # (e.g. batch mode).
