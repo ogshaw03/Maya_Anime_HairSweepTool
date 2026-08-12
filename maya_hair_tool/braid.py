@@ -146,30 +146,33 @@ def _tangents_from_positions(positions: List[Vec3]) -> List[Vec3]:
 
 def _parallel_transport_frames(
     tangents: List[Vec3],
+    positions: Optional[List[Vec3]] = None,
 ) -> Tuple[List[Vec3], List[Vec3]]:
-    """Given per-sample tangents, compute (normals, binormals) that
-    stay orientationally stable as the spine curves.
+    """Rotation Minimising Frame (RMF) computed via Wang et al
+    2008's Double Reflection method.
 
-    Implemented as "fixed-reference projection", NOT true parallel
-    transport (kept the name for existing callers). We compute a
-    single reference normal ``n0`` from the first tangent, then
-    for EVERY sample project that same ``n0`` onto the plane
-    perpendicular to the local tangent. Because n0 never changes,
-    the projected normal never accumulates a twist around the
-    tangent as the spine bends — the braid's "flat side" stays
-    facing the same direction all the way down.
+    Function name kept for callsite compatibility. When
+    ``positions`` are supplied (both callsites do) this runs the
+    proper Double Reflection algorithm, which is the industry-
+    standard RMF and provably minimises rotation around the
+    tangent between adjacent samples. Naive projection-based or
+    axis-angle "parallel transport" implementations both
+    accumulate residual twist on sharply-bent curves — that's what
+    caused the "braid rotates when you bend the spine" complaint
+    that v0.5.23 → v0.5.25 kept trying to fix.
 
-    True parallel transport (chain of small rotations from the
-    previous sample's frame to the current one) is what earlier
-    versions did. It's mathematically stable but each rotation
-    step has a small residual that ROTATES the frame around T
-    as the spine curves. On a sharply-curved spine that added up
-    to the visible "braid rotates when you bend the curve" bug.
+    The algorithm: for each step (x_i, t_i) → (x_{i+1}, t_{i+1})
+      1. Reflect (r_i, t_i) across the plane bisected by
+         v1 = x_{i+1} − x_i     → (r_L, t_L)
+      2. Reflect r_L across the plane bisected by
+         v2 = t_{i+1} − t_L     → r_{i+1}
+    The double reflection is provably the minimum-rotation frame
+    transport for arbitrary curvature between samples.
 
-    Degenerate case: when the local tangent aligns with n0 (spine
-    turns to point along the reference direction) the projection
-    collapses. We fall back to whichever world axis is furthest
-    from that tangent so the frame stays defined.
+    ``positions=None`` falls back to prev-normal projection (v0.5.25
+    behaviour) — good enough for straight-ish curves, worse on
+    sharp bends but the callers always pass positions so this
+    path is only for defensive tests.
     """
     n_samples = len(tangents)
     normals: List[Vec3] = []
@@ -177,51 +180,77 @@ def _parallel_transport_frames(
     if n_samples == 0:
         return normals, binormals
 
-    # Pick an initial normal perpendicular to the first tangent.
+    # Initial normal perpendicular to t0.
     t0 = tangents[0]
     if abs(t0[1]) < 0.9:
         ref = (0.0, 1.0, 0.0)
     else:
         ref = (1.0, 0.0, 0.0)
-    n0 = _normalize(_cross(ref, t0))
-    if _length(n0) < 1e-6:
-        n0 = _normalize(_cross((1.0, 0.0, 0.0), t0))
-    normals.append(n0)
-    binormals.append(_normalize(_cross(t0, n0)))
+    r0 = _normalize(_cross(ref, t0))
+    if _length(r0) < 1e-6:
+        r0 = _normalize(_cross((1.0, 0.0, 0.0), t0))
+    normals.append(r0)
+    binormals.append(_normalize(_cross(t0, r0)))
 
-    # Propagate by projecting the PREVIOUS normal onto each new
-    # tangent's perpendicular plane. Equivalent to parallel
-    # transport but computed via projection rather than
-    # axis-angle rotation, so there's no small-angle accumulation
-    # error from repeated rotate calls. The initial normal is
-    # only referenced once (at sample 0); the fixed-reference
-    # variant that referenced ``n0`` every sample had a discrete
-    # frame-flip when the spine tangent happened to align with
-    # n0's reference direction — this per-step propagation stays
-    # continuous through those directions.
+    have_positions = (
+        positions is not None and len(positions) == n_samples)
+
     for i in range(1, n_samples):
-        t = tangents[i]
-        prev_n = normals[i - 1]
-        projected = _sub(prev_n, _scale(t, _dot(prev_n, t)))
-        pl = _length(projected)
-        if pl < 1e-6:
-            # Only reached when the previous normal aligned
-            # exactly with the current tangent — extremely rare
-            # (spine folds back onto itself along the normal).
+        t_prev = tangents[i - 1]
+        t_curr = tangents[i]
+        r_prev = normals[i - 1]
+
+        if have_positions:
+            # Wang 2008 Double Reflection.
+            x_prev = positions[i - 1]
+            x_curr = positions[i]
+            v1 = _sub(x_curr, x_prev)
+            c1 = _dot(v1, v1)
+            if c1 < 1e-12:
+                r_L = r_prev
+                t_L = t_prev
+            else:
+                factor1 = 2.0 / c1
+                r_L = _sub(
+                    r_prev,
+                    _scale(v1, factor1 * _dot(v1, r_prev)))
+                t_L = _sub(
+                    t_prev,
+                    _scale(v1, factor1 * _dot(v1, t_prev)))
+            v2 = _sub(t_curr, t_L)
+            c2 = _dot(v2, v2)
+            if c2 < 1e-12:
+                r_next = r_L
+            else:
+                factor2 = 2.0 / c2
+                r_next = _sub(
+                    r_L, _scale(v2, factor2 * _dot(v2, r_L)))
+        else:
+            # Projection-only fallback (v0.5.25 behaviour) —
+            # only used when the caller didn't pass positions.
+            r_next = _sub(
+                r_prev, _scale(t_curr, _dot(r_prev, t_curr)))
+
+        # Ensure r_next is perpendicular to t_curr and unit-length
+        # (numerical safety after either path).
+        r_next = _sub(
+            r_next, _scale(t_curr, _dot(t_curr, r_next)))
+        rn_len = _length(r_next)
+        if rn_len < 1e-6:
             fallback = (
-                (0.0, 1.0, 0.0) if abs(t[1]) < 0.9
-                else ((1.0, 0.0, 0.0) if abs(t[0]) < 0.9
+                (0.0, 1.0, 0.0) if abs(t_curr[1]) < 0.9
+                else ((1.0, 0.0, 0.0) if abs(t_curr[0]) < 0.9
                       else (0.0, 0.0, 1.0)))
-            projected = _sub(
-                fallback, _scale(t, _dot(fallback, t)))
-            pl = _length(projected)
-            if pl < 1e-6:
-                projected = (0.0, 1.0, 0.0)
-                pl = 1.0
-        n = _scale(projected, 1.0 / pl)
-        b = _normalize(_cross(t, n))
-        normals.append(n)
-        binormals.append(b)
+            r_next = _sub(
+                fallback,
+                _scale(t_curr, _dot(fallback, t_curr)))
+            rn_len = _length(r_next)
+            if rn_len < 1e-6:
+                r_next = (0.0, 1.0, 0.0)
+                rn_len = 1.0
+        r_next = _scale(r_next, 1.0 / rn_len)
+        normals.append(r_next)
+        binormals.append(_normalize(_cross(t_curr, r_next)))
 
     return normals, binormals
 
@@ -1704,7 +1733,8 @@ def _rebuild_braid_inner(group: str, overrides: dict) -> None:
     else:
         positions = coarse
     tangents = _tangents_from_positions(positions)
-    normals, binormals = _parallel_transport_frames(tangents)
+    normals, binormals = _parallel_transport_frames(
+        tangents, positions)
 
     # Update each strand curve's CVs and propagate thickness.
     for idx, curve in enumerate(curves[:3]):
@@ -2000,7 +2030,8 @@ def create_braid_from_spine(
         positions = coarse_positions
 
     tangents = _tangents_from_positions(positions)
-    normals, binormals = _parallel_transport_frames(tangents)
+    normals, binormals = _parallel_transport_frames(
+        tangents, positions)
 
     # Undo chunking so 3-strand generation is one Ctrl+Z.
     cmds.undoInfo(openChunk=True, chunkName="createBraid")
