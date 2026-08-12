@@ -1510,7 +1510,28 @@ def rebuild_braid(group: str, **overrides) -> None:
     Raises RuntimeError if the group isn't a braid, if the spine
     can't be located (deleted / renamed away from its UUID), or if
     fewer than 3 strand curves are recoverable.
+
+    Selection preservation: every ``cmds.select`` call inside
+    (``hair.create_hair_from_selected_curves`` feed, tail recreate
+    etc.) mutates Maya's selection. During a slider drag on a live
+    Braid this used to drop the user's selection between callbacks
+    — subsequent slider events found no braid selected and became
+    no-ops. Snapshot at entry, restore in ``finally``.
     """
+    prev_selection = cmds.ls(selection=True, long=True) or []
+    try:
+        _rebuild_braid_inner(group, overrides)
+    finally:
+        try:
+            if prev_selection:
+                cmds.select(prev_selection, replace=True)
+            else:
+                cmds.select(clear=True)
+        except Exception:
+            pass
+
+
+def _rebuild_braid_inner(group: str, overrides: dict) -> None:
     params = read_braid_params(group)
     if params is None:
         raise RuntimeError(
