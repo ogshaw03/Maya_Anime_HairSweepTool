@@ -152,6 +152,20 @@ def _find_creators_related_to(node: str) -> List[str]:
     _ensure_maya()
     if not cmds.objExists(node):
         return []
+    # Skip component references like "|curve.cv[2]" or
+    # "|mesh.vtx[5]". They can appear in the selection during CV
+    # edit mode; passing them through unchanged would run e.g.
+    # ``listConnections("|curve.cv[2].worldSpace", ...)`` which
+    # explodes since components don't own that attribute. Fall
+    # back to the owner object when possible so component
+    # selection still resolves to the underlying strand.
+    leaf = node.split("|")[-1]
+    if "." in leaf:
+        base = node.rsplit(".", 1)[0]
+        if base and cmds.objExists(base):
+            node = base
+        else:
+            return []
     node_type = cmds.nodeType(node)
     if node_type == "sweepMeshCreator":
         return [node]
