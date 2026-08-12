@@ -181,15 +181,28 @@ def _parallel_transport_frames(
     n0 = _normalize(_cross(ref, t0))
     if _length(n0) < 1e-6:
         n0 = _normalize(_cross((1.0, 0.0, 0.0), t0))
+    normals.append(n0)
+    binormals.append(_normalize(_cross(t0, n0)))
 
-    for t in tangents:
-        # Project n0 onto the plane perpendicular to t.
-        projected = _sub(n0, _scale(t, _dot(n0, t)))
+    # Propagate by projecting the PREVIOUS normal onto each new
+    # tangent's perpendicular plane. Equivalent to parallel
+    # transport but computed via projection rather than
+    # axis-angle rotation, so there's no small-angle accumulation
+    # error from repeated rotate calls. The initial normal is
+    # only referenced once (at sample 0); the fixed-reference
+    # variant that referenced ``n0`` every sample had a discrete
+    # frame-flip when the spine tangent happened to align with
+    # n0's reference direction — this per-step propagation stays
+    # continuous through those directions.
+    for i in range(1, n_samples):
+        t = tangents[i]
+        prev_n = normals[i - 1]
+        projected = _sub(prev_n, _scale(t, _dot(prev_n, t)))
         pl = _length(projected)
         if pl < 1e-6:
-            # n0 collapsed onto t (spine is running parallel to
-            # our reference). Fall back to the world axis furthest
-            # from t so we still get a well-defined perpendicular.
+            # Only reached when the previous normal aligned
+            # exactly with the current tangent — extremely rare
+            # (spine folds back onto itself along the normal).
             fallback = (
                 (0.0, 1.0, 0.0) if abs(t[1]) < 0.9
                 else ((1.0, 0.0, 0.0) if abs(t[0]) < 0.9
@@ -947,10 +960,22 @@ def _do_deferred_rebuild(group_uuid: str) -> None:
 
 
 def _install_spine_watcher(group: str, spine_curve: str) -> None:
-    """Register a scriptJob on the spine's ``worldSpace[0]`` output
-    so any change (transform OR CV edit) triggers a coalesced
-    rebuild of the braid. Removes any prior watcher for this group
-    first so repeated calls don't stack listeners."""
+    """Register scriptJobs on the spine that fire the braid rebuild
+    on any spatial change (transform move OR CV edit).
+
+    We attach TWO scriptJobs per spine:
+      * ``attributeChange`` on ``worldSpace[0]`` — the standard
+        signal for downstream-visible geometry change.
+      * ``attributeChange`` on ``controlPoints`` — Maya batches
+        worldSpace dirty propagation during interactive CV drags,
+        so worldSpace alone doesn't always fire per-frame. Watching
+        controlPoints directly gives us a per-CV-move callback that
+        works reliably during interactive edits.
+
+    Both are killed and re-registered every call so a module
+    reload doesn't leave stale callbacks piling up against the
+    same spine.
+    """
     group_uuids = cmds.ls(group, uuid=True) or []
     if not group_uuids:
         return
@@ -959,32 +984,40 @@ def _install_spine_watcher(group: str, spine_curve: str) -> None:
     shape = _spine_shape_of(spine_curve)
     if not shape:
         return
-    try:
-        job_id = cmds.scriptJob(
-            attributeChange=[
-                shape + ".worldSpace[0]",
-                lambda uid=group_uuid: _schedule_rebuild(uid),
-            ],
-            killWithScene=True,
-        )
-        _spine_watcher_jobs[group_uuid] = job_id
-    except Exception as exc:
-        cmds.warning(
-            "[maya_hair_tool] spine watcher 登録失敗: "
-            "{0}".format(exc))
+    job_ids = []
+    for attr in ("worldSpace[0]", "controlPoints"):
+        try:
+            jid = cmds.scriptJob(
+                attributeChange=[
+                    shape + "." + attr,
+                    lambda uid=group_uuid: _schedule_rebuild(uid),
+                ],
+                killWithScene=True,
+            )
+            job_ids.append(jid)
+        except Exception as exc:
+            cmds.warning(
+                "[maya_hair_tool] spine watcher 登録失敗 ({0}): "
+                "{1}".format(attr, exc))
+    if job_ids:
+        _spine_watcher_jobs[group_uuid] = job_ids
 
 
-def _uninstall_spine_watcher(group_uuid: str) -> None:
+def _uninstall_spine_watcher(group_uuid: str) -> None:  # noqa: E301
     """Kill the scriptJob associated with this Braid group (if
-    any). Safe to call when nothing is registered."""
-    job_id = _spine_watcher_jobs.pop(group_uuid, None)
-    if job_id is None:
+    any). Safe to call when nothing is registered. Handles both
+    the single-id storage (old shape) and the multi-id list
+    (v0.5.25+ that watches worldSpace AND controlPoints)."""
+    entry = _spine_watcher_jobs.pop(group_uuid, None)
+    if entry is None:
         return
-    try:
-        if cmds.scriptJob(exists=job_id):
-            cmds.scriptJob(kill=job_id, force=True)
-    except Exception:
-        pass
+    ids = entry if isinstance(entry, (list, tuple)) else [entry]
+    for job_id in ids:
+        try:
+            if cmds.scriptJob(exists=job_id):
+                cmds.scriptJob(kill=job_id, force=True)
+        except Exception:
+            pass
 
 
 def install_watchers_for_existing_braids() -> None:
