@@ -158,35 +158,36 @@ def _default_perpendicular(t: Vec3) -> Vec3:
 def _pick_initial_normal(tangents: List[Vec3], t0: Vec3) -> Vec3:
     """Pick n0 to be perpendicular to the curve's dominant plane.
 
-    Scans all tangents and finds the pair with the largest cross
-    product magnitude — that pair spans a plane and its cross gives
-    the plane's normal. For a planar curve every pair returns the
-    exact plane normal (up to sign); for a 3D curve we get the
-    single direction that best approximates the "average" curve
-    normal. Then project onto t0's perpendicular plane and
-    normalise so the result is strictly perpendicular to t0.
+    For every other tangent, cross with t0 — the pair with the
+    largest cross magnitude gives the widest angle from t0, i.e.
+    the best proxy for the curve's plane normal. For a planar
+    curve the plane normal is exactly perpendicular to every
+    tangent, so RMF preserves it with zero rotation. For a 3D
+    curve the resulting n0 minimises overall RMF drift.
 
     Falls back to ``_default_perpendicular`` on near-straight
     tangent arrays (no plane to detect)."""
     if len(tangents) < 2:
         return _default_perpendicular(t0)
-    max_cross_len = 0.0
+    best_cross_len = 0.0
     plane_normal = None
-    for i in range(len(tangents) - 1):
-        for j in range(i + 1, min(len(tangents), i + 5)):
-            c = _cross(tangents[i], tangents[j])
-            cl = _length(c)
-            if cl > max_cross_len:
-                max_cross_len = cl
-                plane_normal = c
-    if plane_normal is None or max_cross_len < 0.05:
+    # Scan ALL tangents against t0. O(n) but n≈32 so ~free.
+    for j in range(1, len(tangents)):
+        c = _cross(t0, tangents[j])
+        cl = _length(c)
+        if cl > best_cross_len:
+            best_cross_len = cl
+            plane_normal = c
+    # Threshold: 0.05 ≈ 3° between tangents. Below that the curve
+    # is essentially straight and any perpendicular works.
+    if plane_normal is None or best_cross_len < 0.05:
         return _default_perpendicular(t0)
-    # Make plane_normal strictly perpendicular to t0.
-    n = _sub(plane_normal, _scale(t0, _dot(t0, plane_normal)))
-    nl = _length(n)
-    if nl < 1e-6:
+    # ``cross(t0, t_j)`` is already perpendicular to t0 by
+    # construction — no extra projection needed. Just normalise.
+    n = _normalize(plane_normal)
+    if _length(n) < 1e-6:
         return _default_perpendicular(t0)
-    return _scale(n, 1.0 / nl)
+    return n
 
 
 def _parallel_transport_frames(
