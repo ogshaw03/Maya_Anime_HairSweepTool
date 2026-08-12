@@ -144,6 +144,51 @@ def _tangents_from_positions(positions: List[Vec3]) -> List[Vec3]:
     return tangents
 
 
+def _default_perpendicular(t: Vec3) -> Vec3:
+    """Any unit vector perpendicular to ``t``. Used as a last-
+    resort when we can't derive a smarter reference from the
+    curve shape."""
+    ref = (0.0, 1.0, 0.0) if abs(t[1]) < 0.9 else (1.0, 0.0, 0.0)
+    n = _normalize(_cross(ref, t))
+    if _length(n) < 1e-6:
+        n = _normalize(_cross((1.0, 0.0, 0.0), t))
+    return n
+
+
+def _pick_initial_normal(tangents: List[Vec3], t0: Vec3) -> Vec3:
+    """Pick n0 to be perpendicular to the curve's dominant plane.
+
+    Scans all tangents and finds the pair with the largest cross
+    product magnitude — that pair spans a plane and its cross gives
+    the plane's normal. For a planar curve every pair returns the
+    exact plane normal (up to sign); for a 3D curve we get the
+    single direction that best approximates the "average" curve
+    normal. Then project onto t0's perpendicular plane and
+    normalise so the result is strictly perpendicular to t0.
+
+    Falls back to ``_default_perpendicular`` on near-straight
+    tangent arrays (no plane to detect)."""
+    if len(tangents) < 2:
+        return _default_perpendicular(t0)
+    max_cross_len = 0.0
+    plane_normal = None
+    for i in range(len(tangents) - 1):
+        for j in range(i + 1, min(len(tangents), i + 5)):
+            c = _cross(tangents[i], tangents[j])
+            cl = _length(c)
+            if cl > max_cross_len:
+                max_cross_len = cl
+                plane_normal = c
+    if plane_normal is None or max_cross_len < 0.05:
+        return _default_perpendicular(t0)
+    # Make plane_normal strictly perpendicular to t0.
+    n = _sub(plane_normal, _scale(t0, _dot(t0, plane_normal)))
+    nl = _length(n)
+    if nl < 1e-6:
+        return _default_perpendicular(t0)
+    return _scale(n, 1.0 / nl)
+
+
 def _parallel_transport_frames(
     tangents: List[Vec3],
     positions: Optional[List[Vec3]] = None,
@@ -180,15 +225,22 @@ def _parallel_transport_frames(
     if n_samples == 0:
         return normals, binormals
 
-    # Initial normal perpendicular to t0.
+    # Initial normal choice matters — RMF only guarantees minimum
+    # ROTATION between adjacent samples, not zero total rotation.
+    # If n0 happens to lie inside the curve's plane (rather than
+    # being perpendicular to it), every subsequent RMF sample has
+    # to rotate to keep n perpendicular to t — the braid's flat
+    # side ends up rotated at the tip vs the root even for a
+    # perfectly planar curve.
+    #
+    # Fix: pick n0 to be the curve's approximate plane normal.
+    # For a planar spine this is exactly perpendicular to every
+    # tangent, so RMF preserves it with zero rotation. For a 3D
+    # spine there's no true plane — pick the direction of maximum
+    # cross-product magnitude across sampled tangents (best
+    # available proxy for "average" curve normal).
     t0 = tangents[0]
-    if abs(t0[1]) < 0.9:
-        ref = (0.0, 1.0, 0.0)
-    else:
-        ref = (1.0, 0.0, 0.0)
-    r0 = _normalize(_cross(ref, t0))
-    if _length(r0) < 1e-6:
-        r0 = _normalize(_cross((1.0, 0.0, 0.0), t0))
+    r0 = _pick_initial_normal(tangents, t0)
     normals.append(r0)
     binormals.append(_normalize(_cross(t0, r0)))
 
@@ -925,6 +977,13 @@ def _create_hair_tie(
 # single deferred rebuild per idle.
 _spine_watcher_jobs: dict = {}
 _pending_rebuilds: set = set()
+# Throttle live rebuild during drag to at most one every
+# _MIN_REBUILD_INTERVAL seconds per Braid group. The API 2.0
+# NodeDirtyPlug callback fires many times per drag frame — running
+# a full rebuild every callback saturates the main thread and
+# makes the drag feel laggy. Keyed by group UUID + last-run epoch.
+_MIN_REBUILD_INTERVAL = 0.05  # seconds — 20 rebuilds/sec cap
+_last_rebuild_time: dict = {}
 
 
 def _spine_shape_of(spine_curve: str) -> Optional[str]:
@@ -966,13 +1025,19 @@ def _schedule_rebuild(group_uuid: str) -> None:
     """
     if group_uuid in _pending_rebuilds:
         return
+    # Rate-limit — the API 2.0 dirty callback fires many times per
+    # drag frame; a full rebuild every fire saturates the main
+    # thread. Skip if we ran the same group within the last
+    # _MIN_REBUILD_INTERVAL seconds.
+    import time as _time
+    now = _time.time()
+    last = _last_rebuild_time.get(group_uuid, 0.0)
+    if now - last < _MIN_REBUILD_INTERVAL:
+        return
+    _last_rebuild_time[group_uuid] = now
     _pending_rebuilds.add(group_uuid)
     try:
         _do_deferred_rebuild(group_uuid)
-        try:
-            cmds.refresh(currentView=True, force=False)
-        except Exception:
-            pass
     finally:
         _pending_rebuilds.discard(group_uuid)
 
