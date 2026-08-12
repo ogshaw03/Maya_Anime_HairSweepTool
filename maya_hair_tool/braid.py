@@ -895,27 +895,39 @@ def _spine_shape_of(spine_curve: str) -> Optional[str]:
 
 
 def _schedule_rebuild(group_uuid: str) -> None:
-    """Enqueue a deferred rebuild for ``group_uuid``. Multiple
-    triggers within the same DG cycle coalesce to ONE rebuild.
+    """Run a rebuild SYNCHRONOUSLY in the scriptJob callback.
 
-    Uses plain ``evalDeferred`` (no ``lowestPriority``) so the
-    rebuild fires between mouse-drag events during a live CV edit,
-    not after the whole drag finishes. ``lowestPriority=True``
-    waits for Maya to be fully idle — during a CV drag that means
-    "when the user releases the mouse", which is exactly the
-    perceived-lag behaviour the user reported. Still deferred so
-    we don't recurse inside the attributeChange callback itself.
+    Previously deferred via ``evalDeferred`` so the rebuild ran
+    outside the attributeChange callback context. Turns out Maya
+    doesn't run deferred callbacks in the middle of an interactive
+    CV drag — they queue up and all drain at once when the drag
+    releases. Result: the braid didn't visually track the spine
+    until the user let go of the mouse ("パッ" behaviour).
+
+    Running the rebuild inline in the callback fires it on every
+    dirty signal from the spine's ``worldSpace[0]``, which happens
+    per-frame during drag → the braid follows the spine as it
+    moves. Recursion is safe: rebuild only writes to STRAND curve
+    CVs (different nodes than the spine), so it doesn't re-fire
+    the spine's own attributeChange. The ``_pending_rebuilds``
+    guard is still there as a defensive belt.
+
+    A ``cmds.refresh`` at the end forces the viewport to redraw
+    even when Maya is mid-drag — without it the sweepMeshCreator
+    would recompute the mesh but not paint the new pixels until
+    the next natural refresh.
     """
     if group_uuid in _pending_rebuilds:
         return
     _pending_rebuilds.add(group_uuid)
     try:
-        cmds.evalDeferred(
-            lambda uid=group_uuid: _do_deferred_rebuild(uid))
-    except Exception:
-        # Fallback — do it immediately if evalDeferred is unavailable
-        # (e.g. batch mode).
         _do_deferred_rebuild(group_uuid)
+        try:
+            cmds.refresh(currentView=True, force=False)
+        except Exception:
+            pass
+    finally:
+        _pending_rebuilds.discard(group_uuid)
 
 
 def _do_deferred_rebuild(group_uuid: str) -> None:
