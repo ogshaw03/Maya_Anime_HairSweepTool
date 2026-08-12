@@ -143,21 +143,36 @@ def _parallel_transport_frames(
     tangents: List[Vec3],
 ) -> Tuple[List[Vec3], List[Vec3]]:
     """Given per-sample tangents, compute (normals, binormals) that
-    don't twist artificially — using the "parallel transport" method
-    (rotate the previous normal by the minimum rotation that carries
-    the previous tangent onto the current one, then re-orthonormalize).
+    stay orientationally stable as the spine curves.
 
-    Frenet frame's normal is defined by the second derivative and
-    flips 180° at inflection points; parallel transport threads a
-    stable frame past those.
+    Implemented as "fixed-reference projection", NOT true parallel
+    transport (kept the name for existing callers). We compute a
+    single reference normal ``n0`` from the first tangent, then
+    for EVERY sample project that same ``n0`` onto the plane
+    perpendicular to the local tangent. Because n0 never changes,
+    the projected normal never accumulates a twist around the
+    tangent as the spine bends — the braid's "flat side" stays
+    facing the same direction all the way down.
+
+    True parallel transport (chain of small rotations from the
+    previous sample's frame to the current one) is what earlier
+    versions did. It's mathematically stable but each rotation
+    step has a small residual that ROTATES the frame around T
+    as the spine curves. On a sharply-curved spine that added up
+    to the visible "braid rotates when you bend the curve" bug.
+
+    Degenerate case: when the local tangent aligns with n0 (spine
+    turns to point along the reference direction) the projection
+    collapses. We fall back to whichever world axis is furthest
+    from that tangent so the frame stays defined.
     """
     n_samples = len(tangents)
     normals: List[Vec3] = []
     binormals: List[Vec3] = []
+    if n_samples == 0:
+        return normals, binormals
 
     # Pick an initial normal perpendicular to the first tangent.
-    # Reference the axis with the smallest |t| component so the
-    # cross product is well-conditioned.
     t0 = tangents[0]
     if abs(t0[1]) < 0.9:
         ref = (0.0, 1.0, 0.0)
@@ -165,35 +180,30 @@ def _parallel_transport_frames(
         ref = (1.0, 0.0, 0.0)
     n0 = _normalize(_cross(ref, t0))
     if _length(n0) < 1e-6:
-        # Fallback if ref happened to be nearly parallel.
         n0 = _normalize(_cross((1.0, 0.0, 0.0), t0))
-    normals.append(n0)
-    binormals.append(_normalize(_cross(t0, n0)))
 
-    for i in range(1, n_samples):
-        t_prev = tangents[i - 1]
-        t_curr = tangents[i]
-        n_prev = normals[i - 1]
-
-        axis = _cross(t_prev, t_curr)
-        axis_len = _length(axis)
-        if axis_len < 1e-6:
-            # Tangents parallel — no rotation needed.
-            n_curr = n_prev
-        else:
-            axis = _scale(axis, 1.0 / axis_len)
-            # Signed angle via atan2(cross, dot) — stable across
-            # the full 0..π range where acos(dot) loses precision.
-            cos_a = max(-1.0, min(1.0, _dot(t_prev, t_curr)))
-            angle = math.atan2(axis_len, cos_a)
-            n_curr = _rotate_axis_angle(n_prev, axis, angle)
-
-        # Re-orthogonalize (numerical drift over many samples adds
-        # up otherwise).
-        n_curr = _sub(n_curr, _scale(t_curr, _dot(n_curr, t_curr)))
-        n_curr = _normalize(n_curr)
-        normals.append(n_curr)
-        binormals.append(_normalize(_cross(t_curr, n_curr)))
+    for t in tangents:
+        # Project n0 onto the plane perpendicular to t.
+        projected = _sub(n0, _scale(t, _dot(n0, t)))
+        pl = _length(projected)
+        if pl < 1e-6:
+            # n0 collapsed onto t (spine is running parallel to
+            # our reference). Fall back to the world axis furthest
+            # from t so we still get a well-defined perpendicular.
+            fallback = (
+                (0.0, 1.0, 0.0) if abs(t[1]) < 0.9
+                else ((1.0, 0.0, 0.0) if abs(t[0]) < 0.9
+                      else (0.0, 0.0, 1.0)))
+            projected = _sub(
+                fallback, _scale(t, _dot(fallback, t)))
+            pl = _length(projected)
+            if pl < 1e-6:
+                projected = (0.0, 1.0, 0.0)
+                pl = 1.0
+        n = _scale(projected, 1.0 / pl)
+        b = _normalize(_cross(t, n))
+        normals.append(n)
+        binormals.append(b)
 
     return normals, binormals
 
