@@ -31,6 +31,11 @@ try:
 except ImportError:
     cmds = None
 
+try:
+    from maya.api import OpenMaya as _om
+except ImportError:
+    _om = None
+
 from . import constants as C
 from . import hair
 from . import sweep_utils as su
@@ -960,21 +965,23 @@ def _do_deferred_rebuild(group_uuid: str) -> None:
 
 
 def _install_spine_watcher(group: str, spine_curve: str) -> None:
-    """Register scriptJobs on the spine that fire the braid rebuild
-    on any spatial change (transform move OR CV edit).
+    """Install a real-time watcher on the spine.
 
-    We attach TWO scriptJobs per spine:
-      * ``attributeChange`` on ``worldSpace[0]`` — the standard
-        signal for downstream-visible geometry change.
-      * ``attributeChange`` on ``controlPoints`` — Maya batches
-        worldSpace dirty propagation during interactive CV drags,
-        so worldSpace alone doesn't always fire per-frame. Watching
-        controlPoints directly gives us a per-CV-move callback that
-        works reliably during interactive edits.
+    Prefers ``OpenMaya.MNodeMessage.addNodeDirtyPlugCallback`` when
+    the API 2.0 module is available — that callback fires on every
+    dirty-flag propagation, including per-mouse-move during an
+    interactive CV drag. ``scriptJob(attributeChange=...)`` on the
+    same attribute does NOT fire during drag in modern Maya: the
+    interactive tool batches attribute updates and only pushes them
+    at drag release, so the braid used to snap-at-end instead of
+    tracking.
 
-    Both are killed and re-registered every call so a module
-    reload doesn't leave stale callbacks piling up against the
-    same spine.
+    Falls back to the pair of scriptJobs (worldSpace + controlPoints)
+    if the API module is missing.
+
+    Any previously-registered watcher for this group — API callback
+    OR scriptJob, from this session or a prior module load — is
+    torn down first so we don't stack duplicates.
     """
     group_uuids = cmds.ls(group, uuid=True) or []
     if not group_uuids:
@@ -984,6 +991,39 @@ def _install_spine_watcher(group: str, spine_curve: str) -> None:
     shape = _spine_shape_of(spine_curve)
     if not shape:
         return
+
+    installed = False
+    if _om is not None:
+        try:
+            sel = _om.MSelectionList()
+            sel.add(shape)
+            dep_node = sel.getDependNode(0)
+
+            def _om_cb(_node, _plug, _client=None, uid=group_uuid):
+                # NodeDirtyPlug fires from inside DG evaluation.
+                # ``executeDeferred`` schedules ``cmds`` work
+                # safely onto the main thread — Maya API callbacks
+                # aren't allowed to run cmds directly.
+                try:
+                    _om.MGlobal.executeInMainThreadWithResult(
+                        lambda: _schedule_rebuild(uid))
+                except Exception:
+                    _schedule_rebuild(uid)
+
+            cb_id = _om.MNodeMessage.addNodeDirtyPlugCallback(
+                dep_node, _om_cb)
+            _spine_watcher_jobs[group_uuid] = {
+                "om_cb": cb_id, "job_ids": []}
+            installed = True
+        except Exception as exc:
+            cmds.warning(
+                "[maya_hair_tool] openMaya watcher 登録失敗 → "
+                "scriptJob にフォールバック: {0}".format(exc))
+
+    if installed:
+        return
+
+    # scriptJob fallback path.
     job_ids = []
     for attr in ("worldSpace[0]", "controlPoints"):
         try:
@@ -1000,19 +1040,38 @@ def _install_spine_watcher(group: str, spine_curve: str) -> None:
                 "[maya_hair_tool] spine watcher 登録失敗 ({0}): "
                 "{1}".format(attr, exc))
     if job_ids:
-        _spine_watcher_jobs[group_uuid] = job_ids
+        _spine_watcher_jobs[group_uuid] = {
+            "om_cb": None, "job_ids": job_ids}
 
 
 def _uninstall_spine_watcher(group_uuid: str) -> None:  # noqa: E301
     """Kill the scriptJob associated with this Braid group (if
-    any). Safe to call when nothing is registered. Handles both
-    the single-id storage (old shape) and the multi-id list
-    (v0.5.25+ that watches worldSpace AND controlPoints)."""
+    any). Safe to call when nothing is registered. Handles all
+    three storage shapes:
+
+    * ``{"om_cb": id, "job_ids": [...]}`` — v0.5.26+
+    * ``[jid, jid]``                     — v0.5.25 (list of ids)
+    * ``jid``                             — pre-v0.5.25 (single id)
+    """
     entry = _spine_watcher_jobs.pop(group_uuid, None)
     if entry is None:
         return
-    ids = entry if isinstance(entry, (list, tuple)) else [entry]
-    for job_id in ids:
+    om_cb = None
+    job_ids = []
+    if isinstance(entry, dict):
+        om_cb = entry.get("om_cb")
+        job_ids = list(entry.get("job_ids") or [])
+    elif isinstance(entry, (list, tuple)):
+        job_ids = list(entry)
+    else:
+        job_ids = [entry]
+
+    if om_cb is not None and _om is not None:
+        try:
+            _om.MMessage.removeCallback(om_cb)
+        except Exception:
+            pass
+    for job_id in job_ids:
         try:
             if cmds.scriptJob(exists=job_id):
                 cmds.scriptJob(kill=job_id, force=True)
