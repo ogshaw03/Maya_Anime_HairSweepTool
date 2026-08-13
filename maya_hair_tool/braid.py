@@ -401,10 +401,7 @@ def _strand_offset_at(
     """
     cum = _cumulative_density(
         u, density_top, density_middle, density_bottom)
-    # ``twist_offset_rad`` rotates every strand around the local
-    # tangent by the same constant angle — used to fix residual
-    # frame rotation on heavily-bent spines by hand.
-    theta = phase_base + twist_offset_rad + 2.0 * math.pi * turns * cum
+    theta = phase_base + 2.0 * math.pi * turns * cum
     if taper_ramp:
         taper = max(0.0, _sample_taper_ramp(u, taper_ramp))
     else:
@@ -421,6 +418,17 @@ def _strand_offset_at(
             taper *= squeeze
     w = radius * math.sin(theta) * taper
     d = radius * depth_ratio * math.sin(2.0 * theta) * taper
+    # ``twist_offset_rad`` rigidly rotates the (w, d) offset in the
+    # local (N, B) plane around the tangent. Adding to theta the
+    # old way just phase-shifted the sin wave — the sin(2θ) depth
+    # term shifted at TWICE the rate of the sin(θ) width term,
+    # deforming the pattern instead of rotating it. Rotating (w, d)
+    # via a proper 2D rotation matrix keeps the braid's silhouette
+    # intact and spins it as a rigid body around the spine.
+    if twist_offset_rad:
+        c = math.cos(twist_offset_rad)
+        s = math.sin(twist_offset_rad)
+        w, d = w * c - d * s, w * s + d * c
     return w, d
 
 
