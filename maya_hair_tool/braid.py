@@ -678,11 +678,12 @@ _ATTR_TWIST_OFFSET = "braidTwistOffsetDeg"  # float, degrees
 
 
 def _default_braid_taper_ramp() -> List[tuple]:
-    """Default 3-point taper ramp — approximates the old
-    ``tip_taper=0.6`` linear behaviour (root full, middle 0.7,
-    tip 0.4) so first-generation braids look similar to what
-    v0.5.x users are used to."""
-    return [(0.0, 1.0), (0.5, 0.7), (1.0, 0.4)]
+    """Default 3-point taper ramp. Values dialed in by the user
+    as their preferred starting silhouette — root sits just
+    below full width so the top of the braid reads as slightly
+    tapered rather than uniformly thick, then eases into the
+    same middle/tip taper the earlier default used."""
+    return [(0.0, 0.8), (0.5, 0.7), (1.0, 0.4)]
 
 
 def _encode_ramp(entries) -> str:
